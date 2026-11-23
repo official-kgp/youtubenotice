@@ -215,7 +215,7 @@ class YouTubeNotification(commands.Cog):
     async def process_websub_video(self, video_id: str, channel_id: str) -> None:
         item = await self.fetch_video(video_id)
         if item and item["channel_id"] == channel_id:
-            await self.process_item(item, allow_new_video=True)
+            await self.process_item(item, allow_new_video=True, force_new_video=True)
 
     async def api_get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any] | None:
         if not API_KEY or not self.session:
@@ -378,7 +378,12 @@ class YouTubeNotification(commands.Cog):
             (utc_now(), channel_id),
         )
 
-    async def process_item(self, item: dict[str, Any], allow_new_video: bool) -> None:
+    async def process_item(
+        self,
+        item: dict[str, Any],
+        allow_new_video: bool,
+        force_new_video: bool = False,
+    ) -> None:
         video_id = item.get("video_id")
         channel_id = item.get("channel_id")
         if not video_id or not channel_id:
@@ -386,23 +391,31 @@ class YouTubeNotification(commands.Cog):
 
         async with self.process_lock:
             previous = self.database().fetchone(
-                "SELECT status FROM videos WHERE video_id=?",
+                "SELECT status, notification_eligible FROM videos WHERE video_id=?",
                 (video_id,),
             )
             old_status = previous["status"] if previous else None
+            eligible = (
+                True if force_new_video
+                else bool(previous["notification_eligible"]) if previous
+                else bool(allow_new_video)
+            )
 
             self.database().execute(
-                """INSERT INTO videos(video_id, channel_id, title, channel_title, status, published_at, updated_at)
-                   VALUES(?,?,?,?,?,?,?)
+                """INSERT INTO videos(
+                       video_id, channel_id, title, channel_title, status,
+                       published_at, notification_eligible, updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?)
                    ON CONFLICT(video_id) DO UPDATE SET
                    title=excluded.title,
                    channel_title=excluded.channel_title,
                    status=excluded.status,
                    published_at=excluded.published_at,
+                   notification_eligible=MAX(videos.notification_eligible, excluded.notification_eligible),
                    updated_at=excluded.updated_at""",
                 (
                     video_id, channel_id, item["title"], item["channel_title"],
-                    item["status"], item.get("published_at"), utc_now(),
+                    item["status"], item.get("published_at"), int(eligible), utc_now(),
                 ),
             )
 
@@ -432,7 +445,7 @@ class YouTubeNotification(commands.Cog):
 
                 should_create = item["status"] in {"upcoming", "live"}
                 if item["status"] == "video":
-                    should_create = allow_new_video and old_status is None
+                    should_create = eligible
                 if should_create:
                     await self.create_forum_thread(config, item)
 
