@@ -168,7 +168,7 @@ YOUTUBE_DB_PATH=data/youtube_notice.sqlite3
 
 ### WebSub購読・署名
 
-購読リクエストには `hub.secret` を付与し、受信POSTでは `X-Hub-Signature` をHMAC-SHA1で検証します。署名秘密が未設定の場合は購読を送信せず、POST通知も受け付けません。購読認証GETではHubから返された実際の `hub.lease_seconds` を保存します。Botは6時間ごとに期限を確認し、残り48時間以下になった購読だけを更新します。Hubが認証GETで期限を返さない場合は、次回の確認で再購読を試みます。
+購読リクエストには `hub.secret` を付与し、受信POSTでは `X-Hub-Signature` をHMAC-SHA1で検証します。署名秘密が未設定の場合は購読を送信せず、POST通知も受け付けません。購読認証GETではHubから返された実際の `hub.lease_seconds` を保存します。Botは6時間ごとに期限を確認し、残存リースの20%（最短6時間・最長48時間）を更新猶予として再購読します。Hubが認証GETで期限を返さない場合は、次回の確認で再購読を試みます。
 
 ### Cloudflare Tunnel
 
