@@ -13,7 +13,7 @@ WebSubは即時性を担い、定期照合は復旧性を担います。どち�
 
 ## 2. アーキテクチャ
 
-\`\`\`text
+```text
 YouTube
   ├─ WebSub Push ──> Cloudflare Tunnel ──> aiohttp /websub
   │                                      │
@@ -34,30 +34,30 @@ YouTube
                                          ^
                                          │
                               YN!youtubectrl
-\`\`\`
+```
 
 ### モジュール責務
 
 | モジュール | 責務 |
 |---|---|
-| \`bot.py\` | Bot起動、Prefix \`YN!\`、Cogロード |
-| \`cogs/notification/core.py\` | WebSub、YouTube API、20分照合、スレッド作成・更新 |
-| \`cogs/config/panel.py\` | Prefixコマンド、LayoutView、設定Modal |
-| \`cogs/common/database.py\` | SQLiteスキーマと共有DB操作 |
-| \`data/\` | 実行時DB（Git管理外） |
-| \`data_public/\` | 公開可能な仕様・サンプルデータ |
+| `bot.py` | Bot起動、Prefix `YN!`、Cogロード |
+| `cogs/notification/core.py` | WebSub、YouTube API、20分照合、スレッド作成・更新 |
+| `cogs/config/panel.py` | Prefixコマンド、LayoutView、設定Modal |
+| `cogs/common/database.py` | SQLiteスキーマと共有DB操作 |
+| `data/` | 実行時DB（Git管理外） |
+| `data_public/` | 公開可能な仕様・サンプルデータ |
 
 Notification CoreとConfig SystemはCogとして分離されています。Config Systemは共有DBとNotification Coreの公開メソッドを利用し、通知処理そのものを持ちません。
 
 ## 3. 通知状態
 
-YouTube Data APIの \`snippet.liveBroadcastContent\` を基準に分類します。
+YouTube Data APIの `snippet.liveBroadcastContent` を基準に分類します。
 
 | API値 | 内部状態 | 動作 |
 |---|---|---|
-| \`upcoming\` | 配信予定 | フォーラムスレッド作成 |
-| \`live\` | ライブ中 | 新規ならスレッド作成。予定枠があれば既存スレッド更新 |
-| \`none\` | 通常動画 | 新着動画としてスレッド作成 |
+| `upcoming` | 配信予定 | フォーラムスレッド作成 |
+| `live` | ライブ中 | 新規ならスレッド作成。予定枠があれば既存スレッド更新 |
+| `none` | 通常動画 | 新着動画としてスレッド作成 |
 
 API応答が空、非公開、削除済み、照会失敗の場合は通常動画と誤認せず、処理を保留します。
 
@@ -69,42 +69,42 @@ WebSubで受信した新規動画は初回同期中でも通知対象です。
 
 ## 4. 20分間隔の補完照合
 
-照合は \`discord.ext.tasks\` で20分間隔に実行します。
+照合は `discord.ext.tasks` で20分間隔に実行します。
 
 各チャンネルについて次の処理を行います。
 
-1. \`channels.list\` でUploads Playlist IDを取得（初回のみ、DBへキャッシュ）。
-2. \`playlistItems.list\` で最新10件の動画IDを取得。
+1. `channels.list` でUploads Playlist IDを取得（初回のみ、DBへキャッシュ）。
+2. `playlistItems.list` で最新10件の動画IDを取得。
 3. DBに保存された配信予定動画も照合対象へ追加。
-4. \`videos.list\` で動画の状態とメタデータを取得。
+4. `videos.list` で動画の状態とメタデータを取得。
 5. SQLiteの状態と比較し、必要な通知・スレッド更新を実行。
 
-動画IDは最大50件ずつ \`videos.list\` にまとめます。既知の配信予定動画が多い場合は、1チャンネルの照合で複数リクエストになることがあります。
+動画IDは最大50件ずつ `videos.list` にまとめます。既知の配信予定動画が多い場合は、1チャンネルの照合で複数リクエストになることがあります。
 
 ## 5. APIクォータ試算
 
-YouTube Data APIの標準クォータは、通常のData APIメソッド合計で10,000ユニット/日です。今回使用する \`channels.list\`、\`playlistItems.list\`、\`videos.list\` は各1ユニットです。最新の公式表はGoogle for DevelopersのQuota Calculatorを参照してください。
+YouTube Data APIの標準クォータは、通常のData APIメソッド合計で10,000ユニット/日です。今回使用する `channels.list`、`playlistItems.list`、`videos.list` は各1ユニットです。最新の公式表はGoogle for DevelopersのQuota Calculatorを参照してください。
 
 ### 10チャンネル・20分間隔
 
 - 1日あたりの照合回数：24時間 × 3回/時 = 72回/チャンネル
-- \`playlistItems.list\`：10チャンネル × 72回 = 720回/日
-- \`videos.list\`：10チャンネル × 72回 = 720回/日（各チャンネルの取得IDが50件以内の場合）
+- `playlistItems.list`：10チャンネル × 72回 = 720回/日
+- `videos.list`：10チャンネル × 72回 = 720回/日（各チャンネルの取得IDが50件以内の場合）
 - 合計：1,440ユニット/日
 - 標準10,000ユニットに対する割合：14.4%
 - 残り：8,560ユニット/日
 
-初回のUploads Playlist ID取得は \`channels.list\` がチャンネルごとに1回なので、10チャンネルで最大10ユニットの初期費用です。
+初回のUploads Playlist ID取得は `channels.list` がチャンネルごとに1回なので、10チャンネルで最大10ユニットの初期費用です。
 
 ### 試算に含まれないもの
 
-- WebSub Pushを受けた際の追加 \`videos.list\`
+- WebSub Pushを受けた際の追加 `videos.list`
 - 50件を超える動画IDの追加バッチ
 - APIエラーやネットワーク障害による再試行
 - チャンネル情報キャッシュを失った場合の再取得
 - 将来追加する機能のAPI呼び出し
 
-\`search.list\` は使用しません。定期照合ではUploads Playlistを使うため、検索用の別枠も消費しません。
+`search.list` は使用しません。定期照合ではUploads Playlistを使うため、検索用の別枠も消費しません。
 
 ## 6. Discord設定
 
@@ -120,9 +120,9 @@ BotのMessage Content IntentをDeveloper Portalとコードの両方で有効に
 
 設定コマンドはPrefixコマンドです。
 
-\`\`\`text
+```text
 YN!youtubectrl
-\`\`\`
+```
 
 LayoutViewパネルから次を設定できます。
 
@@ -140,7 +140,7 @@ LayoutViewパネルから次を設定できます。
 
 ### Python環境
 
-\`\`\`bash
+```bash
 git clone https://github.com/official-kgp/youtubenotice.git
 cd youtubenotice
 python3 -m venv .venv
@@ -148,59 +148,59 @@ source .venv/bin/activate
 pip install -r requirements.txt
 mkdir -p ci data
 cp .env.example ci/.env
-\`\`\`
+```
 
 ### 環境変数
 
-\`ci/.env\` に設定します。
+`ci/.env` に設定します。
 
-\`\`\`dotenv
+```dotenv
 DISCORD_BOT_TOKEN=your_discord_bot_token
 YOUTUBE_API_KEY=your_youtube_data_api_key
 YOUTUBE_CALLBACK_URL=https://y-api.suiten.site
 YOUTUBE_WEB_HOST=127.0.0.1
 YOUTUBE_WEB_PORT=8765
 YOUTUBE_DB_PATH=data/youtube_notice.sqlite3
-\`\`\`
+```
 
-秘密情報を含む \`ci/.env\` はGitへコミットしないでください。
+秘密情報を含む `ci/.env` はGitへコミットしないでください。
 
 ### Cloudflare Tunnel
 
-既存TunnelのIngressへ次のルールを追加します。既存の \`suiten.site\` 等のルールは残してください。
+既存TunnelのIngressへ次のルールを追加します。既存の `suiten.site` 等のルールは残してください。
 
-\`\`\`yaml
+```yaml
 - hostname: y-api.suiten.site
   service: http://127.0.0.1:8765
-\`\`\`
+```
 
 Callback URLは次のURLになります。
 
-\`\`\`text
+```text
 https://y-api.suiten.site/websub
-\`\`\`
+```
 
 ### 起動
 
-\`\`\`bash
+```bash
 source .venv/bin/activate
 python bot.py
-\`\`\`
+```
 
 既存のBot Managerを利用する場合は、他のBotと同じ管理方式に登録します。Bot Managerの管理リストへこのリポジトリの配置ディレクトリ名を追加し、WorkingDirectoryをリポジトリルートに設定してください。既存のsystemdサービスや他Botの設定を上書きしないでください。
 
 ## 8. 永続化と重複防止
 
-SQLiteは \`data/youtube_notice.sqlite3\` に保存します。
+SQLiteは `data/youtube_notice.sqlite3` に保存します。
 
-- \`guild_config\`：Guild別フォーラム・タグ設定
-- \`tracked_channels\`：Guild別監視チャンネル
-- \`channel_cache\`：Uploads Playlist IDと初回同期状態
-- \`videos\`：動画ごとの最新状態
-- \`deliveries\`：Guild・動画ごとの作成済みスレッド
-- \`subscriptions\`：WebSub購読リクエスト履歴
+- `guild_config`：Guild別フォーラム・タグ設定
+- `tracked_channels`：Guild別監視チャンネル
+- `channel_cache`：Uploads Playlist IDと初回同期状態
+- `videos`：動画ごとの最新状態
+- `deliveries`：Guild・動画ごとの作成済みスレッド
+- `subscriptions`：WebSub購読リクエスト履歴
 
-\`deliveries\` の複合主キーで同一Guild・同一動画の二重スレッド作成を抑止します。DBファイルはバックアップ対象ですが、Gitへコミットしないでください。
+`deliveries` の複合主キーで同一Guild・同一動画の二重スレッド作成を抑止します。DBファイルはバックアップ対象ですが、Gitへコミットしないでください。
 
 ## 9. 信頼性と制約
 
@@ -226,7 +226,7 @@ WebSubはPush通知であり、配送遅延・重複・一時的な欠落を完�
 - [ ] TunnelのIngressが8765番ポートへ向いている
 - [ ] BotのMessage Content Intentが有効
 - [ ] フォーラム権限が付与されている
-- [ ] \`YN!youtubectrl\` でフォーラムを登録
+- [ ] `YN!youtubectrl` でフォーラムを登録
 - [ ] 監視チャンネルを登録
 - [ ] WebSub認証GETが成功
 - [ ] Push通知でスレッドが作成される
