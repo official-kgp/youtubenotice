@@ -640,8 +640,12 @@ class YouTubeNotification(commands.Cog):
                     granted_at = datetime.fromisoformat(subscription["requested_at"])
                     if granted_at.tzinfo is None:
                         granted_at = granted_at.replace(tzinfo=timezone.utc)
-                    expires_at = granted_at + timedelta(seconds=subscription["lease_seconds"])
-                    if expires_at - now > timedelta(hours=48):
+                    lease_seconds = int(subscription["lease_seconds"])
+                    expires_at = granted_at + timedelta(seconds=lease_seconds)
+                    renew_window = timedelta(
+                        seconds=min(48 * 3600, max(6 * 3600, int(lease_seconds * 0.2)))
+                    )
+                    if expires_at - now > renew_window:
                         continue
                 except (TypeError, ValueError):
                     log.warning("Invalid stored WebSub lease for %s; renewing.", channel_id)
