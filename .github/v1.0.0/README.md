@@ -112,6 +112,7 @@ Botには対象フォーラムに対する次の権限が必要です。
 
 - View Channel
 - Send Messages
+- Create Public Threads
 - Embed Links
 - Send Messages in Threads
 - Manage Threads
