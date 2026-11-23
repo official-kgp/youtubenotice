@@ -22,7 +22,7 @@ from cogs.common.database import Database
 load_dotenv(dotenv_path="ci/.env")
 
 log = logging.getLogger("youtubenotice.notification")
-WEBSub_HUB = "https://pubsubhubbub.appspot.com/subscribe"
+WEBSUB_HUB = "https://pubsubhubbub.appspot.com/subscribe"
 YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
 ATOM_NS = {
     "atom": "http://www.w3.org/2005/Atom",
@@ -233,7 +233,7 @@ class YouTubeNotification(commands.Cog):
             form["hub.secret"] = WEBSUB_SECRET
 
         try:
-            async with self.session.post(WEBSub_HUB, data=form) as response:
+            async with self.session.post(WEBSUB_HUB, data=form) as response:
                 body = await response.text()
                 if response.status not in (202, 204):
                     log.warning(
@@ -437,7 +437,6 @@ class YouTubeNotification(commands.Cog):
                 "SELECT status, notification_eligible FROM videos WHERE video_id=?",
                 (video_id,),
             )
-            old_status = previous["status"] if previous else None
             eligible = (
                 True if force_new_video
                 else bool(previous["notification_eligible"]) if previous
