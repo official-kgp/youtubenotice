@@ -297,7 +297,7 @@ class YouTubeNotification(commands.Cog):
         )
         return playlist_id
 
-    async def fetch_video_batch(self, video_ids: list[str]) -> list[dict[str, Any]]:
+    async def fetch_video_batch(self, video_ids: list[str]) -> list[dict[str, Any]] | None:
         normalized: list[dict[str, Any]] = []
         unique_ids = list(dict.fromkeys(video_ids))
         for start in range(0, len(unique_ids), SCAN_BATCH_SIZE):
@@ -309,7 +309,7 @@ class YouTubeNotification(commands.Cog):
                 {"part": "snippet", "id": ",".join(batch)},
             )
             if payload is None:
-                continue
+                return None
             normalized.extend(self.normalize_video(raw) for raw in payload.get("items", []))
         return normalized
 
@@ -360,6 +360,10 @@ class YouTubeNotification(commands.Cog):
             return
 
         videos = await self.fetch_video_batch(video_ids)
+        if videos is None:
+            # Do not mark the initial baseline complete after a transient API
+            # error; otherwise old uploads could be misclassified as new later.
+            return
         for item in videos:
             if item.get("channel_id") != channel_id:
                 continue
@@ -418,11 +422,12 @@ class YouTubeNotification(commands.Cog):
                 )
                 if delivery:
                     if delivery["last_status"] == "upcoming" and item["status"] == "live":
-                        await self.update_live_thread(config, delivery["thread_id"], item)
-                        self.database().execute(
-                            "UPDATE deliveries SET last_status='live' WHERE guild_id=? AND video_id=?",
-                            (config["guild_id"], video_id),
-                        )
+                        updated = await self.update_live_thread(config, delivery["thread_id"], item)
+                        if updated:
+                            self.database().execute(
+                                "UPDATE deliveries SET last_status='live' WHERE guild_id=? AND video_id=?",
+                                (config["guild_id"], video_id),
+                            )
                     continue
 
                 should_create = item["status"] in {"upcoming", "live"}
@@ -473,10 +478,10 @@ class YouTubeNotification(commands.Cog):
             (guild.id, item["video_id"], thread.id, status),
         )
 
-    async def update_live_thread(self, config: Any, thread_id: int, item: dict[str, Any]) -> None:
+    async def update_live_thread(self, config: Any, thread_id: int, item: dict[str, Any]) -> bool:
         guild = self.bot.get_guild(config["guild_id"])
         if guild is None:
-            return
+            return False
 
         thread = guild.get_thread(thread_id)
         if thread is None:
@@ -485,10 +490,10 @@ class YouTubeNotification(commands.Cog):
                 thread = fetched if isinstance(fetched, discord.Thread) else None
             except discord.HTTPException:
                 log.warning("Could not fetch existing YouTube thread %s", thread_id)
-                return
+                return False
 
         if thread is None:
-            return
+            return False
 
         try:
             await thread.send(
@@ -508,9 +513,14 @@ class YouTubeNotification(commands.Cog):
                         tag for tag in thread.applied_tags
                         if tag.id != config["upcoming_tag_id"]
                     ]
-                    await thread.edit(applied_tags=[*tags, live_tag])
+                    try:
+                        await thread.edit(applied_tags=[*tags, live_tag])
+                    except discord.HTTPException:
+                        log.exception("Live tag update failed for thread %s", thread_id)
+            return True
         except discord.HTTPException:
             log.exception("Failed to update live status for thread %s", thread_id)
+            return False
 
     async def add_channel(self, guild_id: int, channel_id: str) -> tuple[bool, str]:
         if not CHANNEL_ID_RE.fullmatch(channel_id):
