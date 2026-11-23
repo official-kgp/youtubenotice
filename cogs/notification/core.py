@@ -247,7 +247,15 @@ class YouTubeNotification(commands.Cog):
                     return False
 
             self.database().execute(
-                "INSERT OR REPLACE INTO subscriptions(channel_id, requested_at, lease_seconds, last_result) VALUES(?,?,?,?)",
+                """INSERT INTO subscriptions(channel_id, requested_at, lease_seconds, last_result)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(channel_id) DO UPDATE SET
+                   requested_at=CASE WHEN subscriptions.last_result='verified'
+                                     THEN subscriptions.requested_at ELSE excluded.requested_at END,
+                   lease_seconds=CASE WHEN subscriptions.last_result='verified'
+                                      THEN subscriptions.lease_seconds ELSE excluded.lease_seconds END,
+                   last_result=CASE WHEN subscriptions.last_result='verified'
+                                    THEN subscriptions.last_result ELSE excluded.last_result END""",
                 (channel_id, utc_now(), SUBSCRIPTION_LEASE if mode == "subscribe" else 0, "accepted"),
             )
             return True
