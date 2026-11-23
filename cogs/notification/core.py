@@ -138,6 +138,9 @@ class YouTubeNotification(commands.Cog):
 
         if mode not in {"subscribe", "unsubscribe"} or not challenge or not channel_id:
             raise web.HTTPBadRequest(text="Invalid WebSub verification request.")
+        expected_topic = f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={channel_id}"
+        if topic != expected_topic:
+            raise web.HTTPForbidden(text="Unexpected WebSub topic.")
 
         if mode == "subscribe":
             tracked = self.database().fetchone(
@@ -184,6 +187,8 @@ class YouTubeNotification(commands.Cog):
             ):
                 raise web.HTTPForbidden(text="Invalid WebSub signature.")
             root = ET.fromstring(raw)
+        except web.HTTPException:
+            raise
         except ET.ParseError:
             raise web.HTTPBadRequest(text="Invalid Atom XML.")
         except Exception:
@@ -581,7 +586,7 @@ class YouTubeNotification(commands.Cog):
             "INSERT OR IGNORE INTO tracked_channels(guild_id, channel_id) VALUES(?,?)",
             (guild_id, channel_id),
         )
-        # Subscribe immediately after adding. The 72-hour task is only renewal.
+        # Subscribe immediately after adding; renewal follows the lease granted by the hub.
         subscribed = await self.request_websub(channel_id)
         # Prime channel metadata so the first reconciliation does not need to
         # wait for another cycle to resolve the uploads playlist.
