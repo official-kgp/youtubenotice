@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+
 import discord
 from discord.ext import commands
 
@@ -145,9 +146,9 @@ class PanelButton(discord.ui.Button):
         self.panel = panel
         self.action = action
 
-    async def callback(self, interaction):
-        if not interaction.guild or interaction.guild.id != self.panel.guild_id:
-            await interaction.response.send_message("このパネルは使用できません。", ephemeral=True)
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("このパネルはサーバー内で使用してください。", ephemeral=True)
             return
         if not interaction.user.guild_permissions.manage_guild:
             await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
@@ -165,20 +166,25 @@ class PanelButton(discord.ui.Button):
 
 
 class YouTubeConfigPanel(discord.ui.LayoutView):
-    def __init__(self, cog, guild_id: int):
-        super().__init__(timeout=600)
+    def __init__(self, cog, guild_id: int | None = None):
+        # timeout=None and stable custom_ids make this a persistent Discord view.
+        super().__init__(timeout=None)
         self.cog = cog
         self.guild_id = guild_id
-        cfg = cog.db.fetchone("SELECT forum_id FROM guild_config WHERE guild_id=?", (guild_id,))
-        channels = cog.db.fetchall("SELECT channel_id FROM tracked_channels WHERE guild_id=?", (guild_id,))
-        forum = f"<#{cfg['forum_id']}>" if cfg else "未設定"
+
+        if guild_id is None:
+            summary = "各サーバーの保存済み設定を読み込みます。"
+        else:
+            cfg = cog.db.fetchone("SELECT forum_id FROM guild_config WHERE guild_id=?", (guild_id,))
+            channels = cog.db.fetchall("SELECT channel_id FROM tracked_channels WHERE guild_id=?", (guild_id,))
+            forum = f"<#{cfg['forum_id']}>" if cfg else "未設定"
+            summary = f"**通知先フォーラム：** {forum}\n**監視チャンネル：** {len(channels)}件"
 
         card = discord.ui.Container()
         card.add_item(discord.ui.TextDisplay("# YouTubeNotice | Config"))
         card.add_item(discord.ui.Separator())
         card.add_item(discord.ui.TextDisplay(
-            f"**通知先フォーラム：** {forum}\n**監視チャンネル：** {len(channels)}件\n\n"
-            "ボタンから各種設定を変更できます。設定変更にはサーバー管理権限が必要です。"
+            f"{summary}\n\nボタンから各種設定を変更できます。設定変更にはサーバー管理権限が必要です。"
         ))
         card.add_item(discord.ui.Separator())
         card.add_item(discord.ui.ActionRow(
@@ -198,6 +204,11 @@ class YouTubeConfig(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    async def cog_load(self):
+        # Register one global persistent view so old panel messages keep working
+        # after a process restart. Guild context is taken from each interaction.
+        self.bot.add_view(YouTubeConfigPanel(self))
+
     @property
     def db(self):
         db = getattr(self.bot, "youtube_db", None)
@@ -209,7 +220,7 @@ class YouTubeConfig(commands.Cog):
     @commands.guild_only()
     @commands.has_guild_permissions(manage_guild=True)
     async def youtubectrl(self, ctx):
-        """Open the LayoutView configuration panel."""
+        """Open the persistent LayoutView configuration panel."""
         await ctx.send(view=YouTubeConfigPanel(self, ctx.guild.id))
 
     async def show_status(self, interaction):
