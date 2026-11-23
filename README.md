@@ -52,6 +52,7 @@ cd youtubenotice
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+mkdir -p ci data
 cp .env.example ci/.env
 ```
 
@@ -71,6 +72,10 @@ python bot.py
 2. Botにフォーラム閲覧・投稿・スレッド管理権限を付与します。
 3. `YN!youtubectrl` を実行します。
 4. 設定パネルから通知先フォーラム、監視チャンネル、タグを登録します。
+
+## WebSub署名
+
+WebSub通知はHMAC-SHA1署名を検証します。`.env.example` の `YOUTUBE_WEBSUB_SECRET` に十分長いランダム文字列を設定してください。署名秘密が未設定の場合、Botは購読を送信せず、未署名通知も受け付けません。
 
 ## APIクォータ
 
