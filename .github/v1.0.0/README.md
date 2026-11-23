@@ -164,7 +164,7 @@ YOUTUBE_WEB_PORT=8765
 YOUTUBE_DB_PATH=data/youtube_notice.sqlite3
 ```
 
-秘密情報を含む `ci/.env` はGitへコミットしないでください。
+秘密情報を含む `ci/.env` はGitへコミットしないでください。署名秘密は例として `openssl rand -hex 32` で生成できます。
 
 ### WebSub購読・署名
 
@@ -194,7 +194,7 @@ source .venv/bin/activate
 python bot.py
 ```
 
-既存のBot Managerを利用する場合は、他のBotと同じ管理方式に登録します。Bot Managerの管理リストへこのリポジトリの配置ディレクトリ名を追加し、WorkingDirectoryをリポジトリルートに設定してください。既存のsystemdサービスや他Botの設定を上書きしないでください。
+既存のBot Managerを利用する場合は、他のBotと同じ管理方式に登録します。既存の管理リスト `/home/user/d.py/bots.list` に、配置したBotディレクトリ名を1行追加してください。Bot ManagerのWorkingDirectoryはこのリポジトリのルートを指す必要があります。既存のsystemdサービスや他Botの設定を上書きしないでください。
 
 ## 8. 永続化と重複防止
 
