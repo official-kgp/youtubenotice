@@ -6,8 +6,8 @@ YouTubeNoticeは、登録したYouTubeチャンネルの配信予定・ライブ
 
 通知経路は次の2系統です。
 
-1. **WebSub Push**：YouTubeからのAtom通知をaiohttpで受信し、対象動画を即時照会します。
-2. **定期Reconciliation**：20分ごとに各チャンネルのUploads Playlistを照合し、Push通知の遅延・欠落を補います。
+1. **WebSub Push**：YouTubeからのアップロード・タイトル変更・説明文変更のAtom通知をaiohttpで受信し、対象動画を即時照会します。
+2. **定期Reconciliation**：20分ごとに各チャンネルのUploads Playlistと配信予定動画を照合し、Push通知の遅延・欠落を補います。配信予定からライブ中への状態遷移は、この定期照合で検出します。
 
 WebSubは即時性を担い、定期照合は復旧性を担います。どちらか一方に依存しない構成です。
 
