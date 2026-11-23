@@ -85,6 +85,9 @@ class YouTubeNotification(commands.Cog):
         self.session: aiohttp.ClientSession | None = None
         self.web_runner: web.AppRunner | None = None
         self.process_lock = asyncio.Lock()
+        self.pending_subscriptions: dict[str, datetime] = {}
+        self.pending_unsubscribes: dict[str, datetime] = {}
+        self._startup_renewal = True
 
     async def cog_load(self) -> None:
         if not API_KEY:
@@ -147,8 +150,15 @@ class YouTubeNotification(commands.Cog):
                 "SELECT 1 FROM tracked_channels WHERE channel_id=? LIMIT 1",
                 (channel_id,),
             )
-            if not tracked:
-                raise web.HTTPForbidden(text="Channel is not configured.")
+            pending_until = self.pending_subscriptions.get(channel_id)
+            if (
+                not tracked
+                or pending_until is None
+                or pending_until < datetime.now(timezone.utc)
+            ):
+                self.pending_subscriptions.pop(channel_id, None)
+                raise web.HTTPForbidden(text="No matching pending subscription.")
+            self.pending_subscriptions.pop(channel_id, None)
             try:
                 granted_lease = max(0, int(request.query.get("hub.lease_seconds", "0")))
             except ValueError:
@@ -163,6 +173,11 @@ class YouTubeNotification(commands.Cog):
                 ),
             )
         else:
+            pending_until = self.pending_unsubscribes.get(channel_id)
+            if pending_until is None or pending_until < datetime.now(timezone.utc):
+                self.pending_unsubscribes.pop(channel_id, None)
+                raise web.HTTPForbidden(text="No matching pending unsubscription.")
+            self.pending_unsubscribes.pop(channel_id, None)
             self.database().execute(
                 "DELETE FROM subscriptions WHERE channel_id=?",
                 (channel_id,),
@@ -222,6 +237,9 @@ class YouTubeNotification(commands.Cog):
             log.warning("YOUTUBE_WEBSUB_SECRET is missing; refusing unsigned WebSub subscription.")
             return False
 
+        pending_map = self.pending_subscriptions if mode == "subscribe" else self.pending_unsubscribes
+        pending_map[channel_id] = datetime.now(timezone.utc) + timedelta(minutes=30)
+
         form = {
             "hub.callback": f"{CALLBACK_URL}/websub",
             "hub.topic": f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={channel_id}",
@@ -240,26 +258,29 @@ class YouTubeNotification(commands.Cog):
                         "WebSub %s request failed for %s: HTTP %s %s",
                         mode, channel_id, response.status, body[:300],
                     )
+                    pending_map.pop(channel_id, None)
                     self.database().execute(
                         "INSERT OR REPLACE INTO subscriptions(channel_id, requested_at, lease_seconds, last_result) VALUES(?,?,?,?)",
                         (channel_id, utc_now(), SUBSCRIPTION_LEASE if mode == "subscribe" else 0, f"HTTP {response.status}"),
                     )
                     return False
 
-            self.database().execute(
-                """INSERT INTO subscriptions(channel_id, requested_at, lease_seconds, last_result)
-                   VALUES(?,?,?,?)
-                   ON CONFLICT(channel_id) DO UPDATE SET
-                   requested_at=CASE WHEN subscriptions.last_result='verified'
-                                     THEN subscriptions.requested_at ELSE excluded.requested_at END,
-                   lease_seconds=CASE WHEN subscriptions.last_result='verified'
-                                      THEN subscriptions.lease_seconds ELSE excluded.lease_seconds END,
-                   last_result=CASE WHEN subscriptions.last_result='verified'
-                                    THEN subscriptions.last_result ELSE excluded.last_result END""",
-                (channel_id, utc_now(), SUBSCRIPTION_LEASE if mode == "subscribe" else 0, "accepted"),
-            )
+            if mode == "subscribe":
+                self.database().execute(
+                    """INSERT INTO subscriptions(channel_id, requested_at, lease_seconds, last_result)
+                       VALUES(?,?,?,?)
+                       ON CONFLICT(channel_id) DO UPDATE SET
+                       requested_at=CASE WHEN subscriptions.last_result='verified'
+                                         THEN subscriptions.requested_at ELSE excluded.requested_at END,
+                       lease_seconds=CASE WHEN subscriptions.last_result='verified'
+                                          THEN subscriptions.lease_seconds ELSE excluded.lease_seconds END,
+                       last_result=CASE WHEN subscriptions.last_result='verified'
+                                        THEN subscriptions.last_result ELSE excluded.last_result END""",
+                    (channel_id, utc_now(), SUBSCRIPTION_LEASE, "accepted"),
+                )
             return True
         except (aiohttp.ClientError, asyncio.TimeoutError):
+            pending_map.pop(channel_id, None)
             log.exception("WebSub request failed for %s", channel_id)
             return False
 
@@ -629,8 +650,14 @@ class YouTubeNotification(commands.Cog):
             "SELECT DISTINCT channel_id FROM tracked_channels"
         )
         now = datetime.now(timezone.utc)
+        force_all = self._startup_renewal
+        self._startup_renewal = False
         for row in rows:
             channel_id = row["channel_id"]
+            if force_all:
+                await self.request_websub(channel_id)
+                await asyncio.sleep(0.25)
+                continue
             subscription = self.database().fetchone(
                 "SELECT requested_at, lease_seconds, last_result FROM subscriptions WHERE channel_id=?",
                 (channel_id,),
