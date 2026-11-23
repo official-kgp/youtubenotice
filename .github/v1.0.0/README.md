@@ -152,11 +152,12 @@ cp .env.example ci/.env
 
 ### 環境変数
 
-`ci/.env` に設定します。
+`ci/.env` に設定します。`YOUTUBE_WEBSUB_SECRET` はWebSubのHMAC-SHA1署名検証に使用する秘密文字列です。十分長いランダム値を設定し、Gitへコミットしないでください。
 
 ```dotenv
 DISCORD_BOT_TOKEN=your_discord_bot_token
 YOUTUBE_API_KEY=your_youtube_data_api_key
+YOUTUBE_WEBSUB_SECRET=your_random_websub_secret
 YOUTUBE_CALLBACK_URL=https://y-api.suiten.site
 YOUTUBE_WEB_HOST=127.0.0.1
 YOUTUBE_WEB_PORT=8765
@@ -164,6 +165,10 @@ YOUTUBE_DB_PATH=data/youtube_notice.sqlite3
 ```
 
 秘密情報を含む `ci/.env` はGitへコミットしないでください。
+
+### WebSub購読・署名
+
+購読リクエストには `hub.secret` を付与し、受信POSTでは `X-Hub-Signature` をHMAC-SHA1で検証します。署名秘密が未設定の場合は購読を送信せず、POST通知も受け付けません。購読認証GETではHubから返された実際の `hub.lease_seconds` を保存します。Botは6時間ごとに期限を確認し、残り48時間以下になった購読だけを更新します。Hubが認証GETで期限を返さない場合は、次回の確認で再購読を試みます。
 
 ### Cloudflare Tunnel
 
@@ -173,6 +178,8 @@ YOUTUBE_DB_PATH=data/youtube_notice.sqlite3
 - hostname: y-api.suiten.site
   service: http://127.0.0.1:8765
 ```
+
+YouTubeのPush通知トピックは、現行の配信挙動との互換性を考慮し `https://www.youtube.com/xml/feeds/videos.xml?channel_id=...` を使用します。購読POSTのHTTP 202は受付を示すだけで、実際の購読成立は後続のGET認証で確定します。
 
 Callback URLは次のURLになります。
 
