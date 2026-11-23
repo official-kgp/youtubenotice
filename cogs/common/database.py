@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS videos (
     channel_title TEXT,
     status TEXT NOT NULL,
     published_at TEXT,
+    notification_eligible INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL
 );
 
@@ -75,6 +76,14 @@ class Database:
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.executescript(SCHEMA)
+        # Lightweight forward migration for databases created by early builds.
+        video_columns = {
+            row["name"] for row in self.connection.execute("PRAGMA table_info(videos)").fetchall()
+        }
+        if "notification_eligible" not in video_columns:
+            self.connection.execute(
+                "ALTER TABLE videos ADD COLUMN notification_eligible INTEGER NOT NULL DEFAULT 1"
+            )
         self.connection.commit()
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
