@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import os
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,7 @@ CHANNEL_ID_RE = re.compile(r"^UC[a-zA-Z0-9_-]{22}$")
 VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 DB_PATH = Path(os.getenv("YOUTUBE_DB_PATH", "data/youtube_notice.sqlite3"))
 API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+WEBSUB_SECRET = os.getenv("YOUTUBE_WEBSUB_SECRET", "")
 CALLBACK_URL = os.getenv("YOUTUBE_CALLBACK_URL", "").rstrip("/")
 WEB_HOST = os.getenv("YOUTUBE_WEB_HOST", "127.0.0.1")
 WEB_PORT = int(os.getenv("YOUTUBE_WEB_PORT", "8765"))
@@ -143,12 +146,43 @@ class YouTubeNotification(commands.Cog):
             )
             if not tracked:
                 raise web.HTTPForbidden(text="Channel is not configured.")
+            try:
+                granted_lease = max(0, int(request.query.get("hub.lease_seconds", "0")))
+            except ValueError:
+                granted_lease = 0
+            self.database().execute(
+                """INSERT OR REPLACE INTO subscriptions(
+                       channel_id, requested_at, lease_seconds, last_result
+                   ) VALUES(?,?,?,?)""",
+                (
+                    channel_id, utc_now(), granted_lease,
+                    "verified" if granted_lease > 0 else "verified_unknown_lease",
+                ),
+            )
+        else:
+            self.database().execute(
+                "DELETE FROM subscriptions WHERE channel_id=?",
+                (channel_id,),
+            )
 
         return web.Response(text=challenge, content_type="text/plain")
 
     async def websub_receive(self, request: web.Request) -> web.Response:
         try:
             raw = await request.read()
+            if not WEBSUB_SECRET:
+                raise web.HTTPServiceUnavailable(text="WebSub signature verification is not configured.")
+            signature = request.headers.get("X-Hub-Signature", "")
+            algorithm, separator, supplied_digest = signature.partition("=")
+            expected_digest = hmac.new(
+                WEBSUB_SECRET.encode("utf-8"), raw, hashlib.sha1,
+            ).hexdigest()
+            if (
+                not separator
+                or algorithm.lower() != "sha1"
+                or not hmac.compare_digest(supplied_digest, expected_digest)
+            ):
+                raise web.HTTPForbidden(text="Invalid WebSub signature.")
             root = ET.fromstring(raw)
         except ET.ParseError:
             raise web.HTTPBadRequest(text="Invalid Atom XML.")
@@ -179,6 +213,9 @@ class YouTubeNotification(commands.Cog):
         if not CALLBACK_URL or not self.session:
             log.warning("YOUTUBE_CALLBACK_URL is missing; WebSub request skipped.")
             return False
+        if not WEBSUB_SECRET:
+            log.warning("YOUTUBE_WEBSUB_SECRET is missing; refusing unsigned WebSub subscription.")
+            return False
 
         form = {
             "hub.callback": f"{CALLBACK_URL}/websub",
@@ -188,6 +225,7 @@ class YouTubeNotification(commands.Cog):
         }
         if mode == "subscribe":
             form["hub.lease_seconds"] = str(SUBSCRIPTION_LEASE)
+            form["hub.secret"] = WEBSUB_SECRET
 
         try:
             async with self.session.post(WEBSub_HUB, data=form) as response:
@@ -570,16 +608,32 @@ class YouTubeNotification(commands.Cog):
             )
         return True
 
-    @tasks.loop(hours=72)
+    @tasks.loop(hours=6)
     async def renew_subscriptions(self) -> None:
-        if not CALLBACK_URL:
-            log.warning("Skipping subscription renewal: YOUTUBE_CALLBACK_URL is missing.")
+        if not CALLBACK_URL or not WEBSUB_SECRET:
+            log.warning("Skipping WebSub renewal: callback URL or signature secret is missing.")
             return
         rows = self.database().fetchall(
             "SELECT DISTINCT channel_id FROM tracked_channels"
         )
+        now = datetime.now(timezone.utc)
         for row in rows:
-            await self.request_websub(row["channel_id"])
+            channel_id = row["channel_id"]
+            subscription = self.database().fetchone(
+                "SELECT requested_at, lease_seconds, last_result FROM subscriptions WHERE channel_id=?",
+                (channel_id,),
+            )
+            if subscription and subscription["last_result"] == "verified" and subscription["lease_seconds"]:
+                try:
+                    granted_at = datetime.fromisoformat(subscription["requested_at"])
+                    if granted_at.tzinfo is None:
+                        granted_at = granted_at.replace(tzinfo=timezone.utc)
+                    expires_at = granted_at + timedelta(seconds=subscription["lease_seconds"])
+                    if expires_at - now > timedelta(hours=48):
+                        continue
+                except (TypeError, ValueError):
+                    log.warning("Invalid stored WebSub lease for %s; renewing.", channel_id)
+            await self.request_websub(channel_id)
             await asyncio.sleep(0.25)
 
     @renew_subscriptions.before_loop
