@@ -78,7 +78,14 @@ def notification_layout(item: dict[str, Any], mention_role_id: int | None = None
         "live": "LIVE",
         "premiere": "PREMIERE",
     }
-    status_label = "LIVE" if status == "live" else "配信予定" if status == "upcoming" else "公開"
+    status_label = "LIVE" if status == "live" else "配信予定" if status == "upcoming" else "アーカイブ" if status == "archive" else "公開"
+    title_icon = (
+        "<:Video_Schedule:1574818195288760410>" if status == "upcoming"
+        else "<:Live_Streaming:1574813059036221445>" if status == "live"
+        else "<:Archive:1574816935131217990>" if status == "archive"
+        else "<:Youtube_Shorts:1574814556369330288>" if content_type == "short"
+        else "<:Youtube_Video:1574814296158900284>"
+    )
     stream_date = (
         youtube_timestamp(item.get("actual_start_time"))
         if status == "live"
@@ -111,7 +118,7 @@ def notification_layout(item: dict[str, Any], mention_role_id: int | None = None
 
     container.add_item(discord.ui.TextDisplay(f"-# {channel}"))
     container.add_item(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
-    container.add_item(discord.ui.TextDisplay(f"## 🔴 ｜ {title}"))
+    container.add_item(discord.ui.TextDisplay(f"## {title_icon} ｜ {title}"))
     container.add_item(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.large))
     container.add_item(discord.ui.TextDisplay("\\n".join(info)))
     container.add_item(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.large))
@@ -377,7 +384,10 @@ class YouTubeNotification(commands.Cog):
     def normalize_video(raw: dict[str, Any]) -> dict[str, Any]:
         snippet = raw.get("snippet", {})
         live_state = snippet.get("liveBroadcastContent", "none")
-        status = live_state if live_state in {"upcoming", "live"} else "video"
+        live_details = raw.get("liveStreamingDetails", {})
+        actual_start_time = live_details.get("actualStartTime")
+        actual_end_time = live_details.get("actualEndTime")
+        status = live_state if live_state in {"upcoming", "live"} else ("archive" if actual_start_time and actual_end_time else "video")
 
         duration = raw.get("contentDetails", {}).get("duration", "")
         duration_match = re.fullmatch(
@@ -388,7 +398,9 @@ class YouTubeNotification(commands.Cog):
             hours, minutes, seconds = (int(value or 0) for value in duration_match.groups())
             duration_seconds = hours * 3600 + minutes * 60 + seconds
 
-        if status == "live":
+        if status == "archive":
+            content_type = "archive"
+        elif status == "live":
             content_type = "live"
         elif status == "upcoming":
             # Data API does not reliably distinguish a Premiere from a scheduled live stream.
@@ -397,8 +409,6 @@ class YouTubeNotification(commands.Cog):
             # Aspect ratio is not exposed by the Data API; duration is a best-effort heuristic.
             content_type = "short" if 0 < duration_seconds <= 180 else "horizontal"
 
-        live_details = raw.get("liveStreamingDetails", {})
-        actual_start_time = live_details.get("actualStartTime")
         scheduled_start_time = live_details.get("scheduledStartTime")
 
         thumbnails = snippet.get("thumbnails", {})
@@ -600,17 +610,26 @@ class YouTubeNotification(commands.Cog):
                     (config["guild_id"], video_id),
                 )
                 if delivery:
-                    if delivery["last_status"] == "upcoming" and item["status"] == "live":
+                    previous_status = delivery["last_status"]
+                    transition = (
+                        previous_status == "upcoming" and item["status"] in {"live", "video", "archive"}
+                    ) or (previous_status == "live" and item["status"] == "archive")
+                    if transition:
+                        # A scheduled Premiere becomes a regular video after its premiere;
+                        # a completed live broadcast becomes an archive.
+                        if previous_status == "upcoming" and item["status"] == "archive":
+                            item["status"] = "video"
+                            item["content_type"] = "horizontal"
                         updated = await self.update_live_thread(config, delivery["thread_id"], item)
                         if updated:
                             self.database().execute(
-                                "UPDATE deliveries SET last_status='live' WHERE guild_id=? AND video_id=?",
-                                (config["guild_id"], video_id),
+                                "UPDATE deliveries SET last_status=? WHERE guild_id=? AND video_id=?",
+                                (item["status"], config["guild_id"], video_id),
                             )
                     continue
 
                 should_create = item["status"] in {"upcoming", "live"}
-                if item["status"] == "video":
+                if item["status"] in {"video", "archive"}:
                     should_create = eligible
                 if should_create:
                     await self.create_forum_thread(config, item)
