@@ -617,9 +617,11 @@ class YouTubeNotification(commands.Cog):
                     if transition:
                         # A scheduled Premiere becomes a regular video after its premiere;
                         # a completed live broadcast becomes an archive.
-                        if previous_status == "upcoming" and item["status"] == "archive":
+                        if previous_status == "upcoming" and item["status"] in {"video", "archive"}:
+                            # A Premiere finishes as a normal horizontal video, not a live archive.
                             item["status"] = "video"
                             item["content_type"] = "horizontal"
+                            item["published_at"] = item.get("actual_start_time") or item.get("published_at")
                         updated = await self.update_live_thread(config, delivery["thread_id"], item)
                         if updated:
                             self.database().execute(
@@ -707,19 +709,20 @@ class YouTubeNotification(commands.Cog):
                 allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
             )
             forum = guild.get_channel(config["forum_id"])
-            live_tag_id = config["live_tag_id"]
-            if isinstance(forum, discord.ForumChannel) and live_tag_id:
-                live_tag = next(
-                    (tag for tag in forum.available_tags if tag.id == live_tag_id),
+            tag_column = "live_tag_id" if item.get("status") == "live" else "horizontal_tag_id" if item.get("status") == "video" else None
+            target_tag_id = config[tag_column] if tag_column else None
+            if isinstance(forum, discord.ForumChannel) and target_tag_id:
+                target_tag = next(
+                    (tag for tag in forum.available_tags if tag.id == target_tag_id),
                     None,
                 )
-                if live_tag:
-                    premiere_tag_id = config["premiere_tag_id"]
-                    tags = [tag for tag in thread.applied_tags if tag.id != premiere_tag_id]
+                if target_tag:
+                    old_tag_ids = {config["premiere_tag_id"], config["live_tag_id"]}
+                    tags = [tag for tag in thread.applied_tags if tag.id not in old_tag_ids]
                     try:
-                        await thread.edit(applied_tags=[*tags, live_tag])
+                        await thread.edit(applied_tags=[*tags, target_tag])
                     except discord.HTTPException:
-                        log.exception("Live tag update failed for thread %s", thread_id)
+                        log.exception("Status tag update failed for thread %s", thread_id)
             return True
         except discord.HTTPException:
             log.exception("Failed to update live status for thread %s", thread_id)
