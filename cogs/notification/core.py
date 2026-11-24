@@ -560,6 +560,7 @@ class YouTubeNotification(commands.Cog):
             log.warning("Configured destination is not a ForumChannel: guild=%s", guild.id)
             return
 
+        status = item["status"]
         content_type = item.get("content_type", "horizontal")
         tag_column = {
             "short": "short_tag_id",
