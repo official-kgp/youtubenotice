@@ -34,6 +34,9 @@ class MyBot(commands.Bot):
                 for filename in files:
                     if filename.endswith(".py") and filename != "__init__.py":
                         rel_path = os.path.relpath(os.path.join(root, filename), ".")
+                        # Shared utility modules are imported by Cogs, not loaded as extensions.
+                        if rel_path == os.path.join("cogs", "common", "database.py"):
+                            continue
                         cog_name = rel_path.replace(os.sep, ".")[:-3]
 
                         try:
