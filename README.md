@@ -79,6 +79,17 @@ python bot.py
 
 WebSub通知はHMAC-SHA1署名を検証します。`.env.example` の `YOUTUBE_WEBSUB_SECRET` に十分長いランダム文字列を設定してください。署名秘密が未設定の場合、Botは購読を送信せず、未署名通知も受け付けません。
 
+## 通知レイアウトと配信日時
+
+通知はDiscord Components V2の `LayoutView` で構成します。赤色のContainer、チャンネル名、タイトル、配信情報、MediaGalleryサムネイル、YouTubeリンクボタン、フッターを表示します。
+
+- 通常動画・Shorts：YouTubeの公開日時を「配信日」として表示
+- 配信予定：`liveStreamingDetails.scheduledStartTime` を「配信予定日」として表示
+- ライブ開始後：`liveStreamingDetails.actualStartTime` を「配信日」として表示し、「配信予定日」は表示しません
+- 既存の配信予定通知は、ライブ開始を検知した際にスレッドの先頭メッセージを更新します
+
+日時はDiscordタイムスタンプ形式で表示するため、閲覧者のローカルタイムゾーンに変換されます。動画ジャンルはYouTubeのカテゴリIDから表示します。
+
 ## 動画種別の判定について
 
 YouTube Data API v3が返す情報には、動画の縦横比やプレミア公開を通常の予約ライブから確実に区別する項目がありません。そのため、現在の分類は次の近似ルールです。
