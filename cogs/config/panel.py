@@ -14,31 +14,6 @@ def snowflake(value: str) -> int | None:
     return int(match.group(0)) if match else None
 
 
-class ForumModal(discord.ui.Modal):
-    def __init__(self, cog):
-        super().__init__(title="通知先フォーラムを設定", timeout=300)
-        self.cog = cog
-        self.value = discord.ui.TextInput(label="フォーラムチャンネルID", placeholder="ID またはチャンネルメンション", max_length=30)
-        self.add_item(self.value)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
-            await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
-            return
-        channel_id = snowflake(str(self.value.value))
-        channel = interaction.guild.get_channel(channel_id) if channel_id else None
-        if not isinstance(channel, discord.ForumChannel):
-            await interaction.response.send_message("指定されたチャンネルはフォーラムではありません。", ephemeral=True)
-            return
-        self.cog.db.execute(
-            """INSERT INTO guild_config(guild_id, forum_id) VALUES(?,?)
-               ON CONFLICT(guild_id) DO UPDATE SET forum_id=excluded.forum_id,
-               updated_at=CURRENT_TIMESTAMP""",
-            (interaction.guild.id, channel.id),
-        )
-        await interaction.response.send_message(f"通知先を {channel.mention} に設定しました。", ephemeral=True)
-
-
 class TagsModal(discord.ui.Modal):
     def __init__(self, cog):
         super().__init__(title="動画種別ごとのフォーラムタグ", timeout=300)
@@ -102,6 +77,9 @@ class MentionRoleModal(discord.ui.Modal):
         if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
             await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
             return
+        if not self.cog.db.fetchone("SELECT 1 FROM guild_config WHERE guild_id=?", (interaction.guild.id,)):
+            await interaction.response.send_message("先に通知先フォーラムを設定してください。", ephemeral=True)
+            return
         raw = str(self.value.value).strip()
         role_id = snowflake(raw) if raw else None
         role = interaction.guild.get_role(role_id) if role_id else None
@@ -130,9 +108,7 @@ class PanelButton(discord.ui.Button):
         if not interaction.user.guild_permissions.manage_guild:
             await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
             return
-        if self.action == "forum":
-            await interaction.response.send_modal(ForumModal(self.panel.cog))
-        elif self.action in {"add", "remove", "test"}:
+        if self.action in {"forum", "add", "remove", "test"}:
             await self.panel.cog.prompt_channel_id(interaction, self.action)
         elif self.action == "tags":
             await interaction.response.send_modal(TagsModal(self.panel.cog))
@@ -216,7 +192,7 @@ class YouTubeConfig(commands.Cog):
             return
 
         core = self.bot.get_cog("YouTubeNotification")
-        if core is None:
+        if action != "forum" and core is None:
             await interaction.response.send_message("通知コアが起動していません。", ephemeral=True)
             return
 
@@ -224,11 +200,11 @@ class YouTubeConfig(commands.Cog):
         self._input_sessions.add(session_key)
         prompt = None
         try:
-            prompt = await channel.send(
-                "YouTubeチャンネルIDを送信してください。\n"
-                "例：UCから始まる24文字\n"
-                "入力待ち時間は120秒です。"
-            )
+            if action == "forum":
+                prompt_text = "通知先フォーラムのチャンネルIDを送信してください。\n入力待ち時間は120秒です。"
+            else:
+                prompt_text = "YouTubeチャンネルIDを送信してください。\n例：UCから始まる24文字\n入力待ち時間は120秒です。"
+            prompt = await channel.send(prompt_text)
             check = lambda message: (
                 message.author.id == interaction.user.id
                 and message.channel.id == channel.id
@@ -243,19 +219,33 @@ class YouTubeConfig(commands.Cog):
                     await interaction.followup.send("入力がタイムアウトしました。もう一度パネルから操作してください。", ephemeral=True)
                     return
                 candidate = message.content.strip()
-                if CHANNEL_RE.fullmatch(candidate):
-                    channel_id = candidate
-                    break
+                if action == "forum":
+                    discord_channel_id = snowflake(candidate)
+                    target = guild.get_channel(discord_channel_id) if discord_channel_id else None
+                    if isinstance(target, discord.ForumChannel):
+                        channel_id = str(target.id)
+                        break
+                    error_message = "フォーラムチャンネルのIDまたはメンションを送信してください。"
+                else:
+                    if CHANNEL_RE.fullmatch(candidate):
+                        channel_id = candidate
+                        break
+                    error_message = "YouTubeチャンネルIDはUCから始まる24文字で指定してください。"
                 if attempt < 2:
-                    await interaction.followup.send(
-                        "チャンネルIDの形式が正しくありません。UCから始まる24文字を送信してください。",
-                        ephemeral=True,
-                    )
+                    await interaction.followup.send(error_message, ephemeral=True)
             if channel_id is None:
                 await interaction.followup.send("形式が確認できなかったため、操作を中止しました。", ephemeral=True)
                 return
 
-            if action == "add":
+            if action == "forum":
+                self.db.execute(
+                    """INSERT INTO guild_config(guild_id, forum_id) VALUES(?,?)
+                       ON CONFLICT(guild_id) DO UPDATE SET forum_id=excluded.forum_id,
+                       updated_at=CURRENT_TIMESTAMP""",
+                    (guild.id, int(channel_id)),
+                )
+                ok, result = True, f"通知先フォーラムを <#{channel_id}> に設定しました。"
+            elif action == "add":
                 ok, result = await core.add_channel(guild.id, channel_id)
             elif action == "remove":
                 tracked = self.db.fetchone(
