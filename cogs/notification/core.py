@@ -455,6 +455,7 @@ class YouTubeNotification(commands.Cog):
         item: dict[str, Any],
         allow_new_video: bool,
         force_new_video: bool = False,
+        target_guild_id: int | None = None,
     ) -> None:
         video_id = item.get("video_id")
         channel_id = item.get("channel_id")
@@ -495,8 +496,8 @@ class YouTubeNotification(commands.Cog):
                           gc.live_tag_id, gc.video_tag_id
                    FROM tracked_channels tc
                    JOIN guild_config gc ON gc.guild_id=tc.guild_id
-                   WHERE tc.channel_id=?""",
-                (channel_id,),
+                   WHERE tc.channel_id=? AND (? IS NULL OR tc.guild_id=?)""",
+                (channel_id, target_guild_id, target_guild_id),
             )
 
             for config in configs:
@@ -606,6 +607,72 @@ class YouTubeNotification(commands.Cog):
             log.exception("Failed to update live status for thread %s", thread_id)
             return False
 
+    async def test_latest_video(self, guild_id: int, channel_id: str) -> tuple[bool, str]:
+        """Fetch one latest upload through YouTube API and run the normal delivery path."""
+        if not API_KEY:
+            return False, "YOUTUBE_API_KEY が設定されていません。"
+        tracked = self.database().fetchone(
+            "SELECT 1 FROM tracked_channels WHERE guild_id=? AND channel_id=?",
+            (guild_id, channel_id),
+        )
+        if not tracked:
+            return False, "このサーバーで監視しているチャンネルではありません。"
+
+        config = self.database().fetchone(
+            "SELECT forum_id FROM guild_config WHERE guild_id=?",
+            (guild_id,),
+        )
+        if not config:
+            return False, "通知先フォーラムが設定されていません。"
+
+        playlist_id = await self.get_uploads_playlist(channel_id)
+        if not playlist_id:
+            return False, "チャンネル情報を取得できませんでした。APIキー・チャンネルID・API制限を確認してください。"
+
+        playlist = await self.api_get(
+            "playlistItems",
+            {"part": "contentDetails", "playlistId": playlist_id, "maxResults": 1},
+        )
+        if playlist is None:
+            return False, "最新動画一覧の取得に失敗しました。BotログのYouTube APIエラーを確認してください。"
+        items = playlist.get("items") or []
+        if not items:
+            return False, "このチャンネルの公開動画を取得できませんでした。"
+
+        video_id = (items[0].get("contentDetails") or {}).get("videoId")
+        if not video_id:
+            return False, "最新動画のIDがレスポンスにありませんでした。"
+
+        video = await self.fetch_video(video_id)
+        if not video or video.get("channel_id") != channel_id:
+            return False, "最新動画の詳細取得に失敗したか、チャンネルIDが一致しません。"
+
+        existing = self.database().fetchone(
+            "SELECT thread_id FROM deliveries WHERE guild_id=? AND video_id=?",
+            (guild_id, video_id),
+        )
+        if existing:
+            return True, (
+                f"API取得成功：**{video['title']}**\n"
+                f"この動画は既に通知済みです（スレッドID: `{existing['thread_id']}`）。重複投稿は行いません。"
+            )
+
+        await self.process_item(
+            video, allow_new_video=True, force_new_video=True, target_guild_id=guild_id
+        )
+        delivered = self.database().fetchone(
+            "SELECT thread_id FROM deliveries WHERE guild_id=? AND video_id=?",
+            (guild_id, video_id),
+        )
+        if delivered:
+            return True, (
+                f"テスト成功：**{video['title']}**\n"
+                "YouTube API取得からDiscordフォーラムへのスレッド作成まで完了しました。"
+            )
+        return False, (
+            f"API取得成功：**{video['title']}**\n"
+            "Discordへのスレッド作成に失敗しました。Botログ、フォーラム権限、タグ設定を確認してください。"
+        )
     async def add_channel(self, guild_id: int, channel_id: str) -> tuple[bool, str]:
         if not CHANNEL_ID_RE.fullmatch(channel_id):
             return False, "チャンネルIDは UC から始まる24文字で指定してください。"
