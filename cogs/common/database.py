@@ -12,6 +12,10 @@ CREATE TABLE IF NOT EXISTS guild_config (
     upcoming_tag_id INTEGER,
     live_tag_id INTEGER,
     video_tag_id INTEGER,
+    short_tag_id INTEGER,
+    horizontal_tag_id INTEGER,
+    premiere_tag_id INTEGER,
+    mention_role_id INTEGER,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -84,6 +88,12 @@ class Database:
             self.connection.execute(
                 "ALTER TABLE videos ADD COLUMN notification_eligible INTEGER NOT NULL DEFAULT 1"
             )
+        config_columns = {
+            row["name"] for row in self.connection.execute("PRAGMA table_info(guild_config)").fetchall()
+        }
+        for column in ("short_tag_id", "horizontal_tag_id", "premiere_tag_id", "mention_role_id"):
+            if column not in config_columns:
+                self.connection.execute(f"ALTER TABLE guild_config ADD COLUMN {column} INTEGER")
         self.connection.commit()
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
