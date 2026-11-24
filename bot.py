@@ -1,83 +1,71 @@
-from __future__ import annotations
-
-import asyncio
-import logging
-import os
-
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+import os
+import asyncio
 
-# Match the existing Suiten bot convention: secrets are stored in ci/.env.
+# .envからトークン読み込み
 load_dotenv(dotenv_path="ci/.env")
-
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-PREFIX = "YN!"
+if TOKEN is None:
+    raise ValueError("DISCORD_BOT_TOKEN が見つかりません")
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-log = logging.getLogger("youtubenotice")
+# Intents
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
+intents.guilds = True
+intents.messages = True 
 
-
-class YouTubeNoticeBot(commands.Bot):
-    def __init__(self) -> None:
-        intents = discord.Intents.default()
-        intents.guilds = True
-        intents.messages = True
-        intents.message_content = True
-
+class MyBot(commands.Bot):
+    def __init__(self):
         super().__init__(
-            command_prefix=PREFIX,
-            case_insensitive=True,
-            strip_after_prefix=True,
+            command_prefix="YN!",
             intents=intents,
-            help_command=None,
+            help_command=None
         )
 
-    async def setup_hook(self) -> None:
-        # The notification Cog creates the shared database and HTTP listener.
-        # Load it before the config Cog, which accesses that shared service.
-        extensions = (
-            "cogs.notification.core",
-            "cogs.config.panel",
-        )
-        for extension in extensions:
-            try:
-                await self.load_extension(extension)
-                log.info("Loaded extension: %s", extension)
-            except Exception:
-                log.exception("Failed to load extension: %s", extension)
-                raise
+    async def setup_hook(self):
+        failed_cogs = []
 
-    async def on_ready(self) -> None:
-        log.info("Logged in as %s (ID: %s)", self.user, self.user.id if self.user else "unknown")
-        log.info("Prefix: %s", PREFIX)
+        # --- Cogをまとめてロード ---
+        for folder in ("./cogs", "./SSP"):
+            for root, _, files in os.walk(folder):
+                for filename in files:
+                    if filename.endswith(".py") and filename != "__init__.py":
+                        rel_path = os.path.relpath(os.path.join(root, filename), ".")
+                        cog_name = rel_path.replace(os.sep, ".")[:-3]
 
-    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
-        if isinstance(error, commands.CommandNotFound):
-            return
-        if isinstance(error, commands.MissingPermissions):
-            await ctx.reply("このコマンドを実行する権限がありません。", mention_author=False)
-            return
-        if isinstance(error, commands.NoPrivateMessage):
-            await ctx.reply("このコマンドはサーバー内で実行してください。", mention_author=False)
-            return
-        log.error("Command error", exc_info=(type(error), error, error.__traceback__))
-        await ctx.reply("コマンドの実行中にエラーが発生しました。Botログを確認してください。", mention_author=False)
+                        try:
+                            await self.load_extension(cog_name)
+                        except Exception as e:
+                            failed_cogs.append((cog_name, e))
 
+        # --- ロード結果表示 ---
+        if failed_cogs:
+            print(f"✅ 以下のFile以外ロードに成功しました - {self.user}")
+            for cog_name, error in failed_cogs:
+                print(
+                    f"❌ ロード失敗 : {cog_name} - {self.user}\n"
+                    f"{error}\n"
+                )
+        else:
+            print(f"✅ すべてのFileのロードに成功しました - {self.user}")
 
-async def main() -> None:
-    if not TOKEN:
-        raise RuntimeError("ci/.env に DISCORD_BOT_TOKEN を設定してください。")
+        # --- スラッシュコマンド同期 ---
+        synced = await self.tree.sync()
+        print(f"✅ スラッシュコマンド登録数: {len(synced)} - {self.user}")
 
-    async with YouTubeNoticeBot() as bot:
-        await bot.start(TOKEN)
+    async def on_ready(self):
+        print(f"✅ ログイン完了: {self.user}")
 
+# --- 起動処理 ---
+async def main():
+    bot = MyBot()
+    await bot.start(TOKEN)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log.info("Bot stopped by keyboard interrupt.")
+        print("🛑 Botを手動で停止しました。")	

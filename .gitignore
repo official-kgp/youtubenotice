@@ -8,6 +8,7 @@ ci/.env.*
 # Python
 __pycache__/
 *.py[cod]
+__init__.py
 *$py.class
 .Python
 .venv/
