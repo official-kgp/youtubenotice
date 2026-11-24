@@ -45,35 +45,37 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class YouTubeNoticeView(discord.ui.LayoutView):
-    """Discord Components V2 notice card."""
+class YouTubeNoticeView(discord.ui.View):
+    """Link button shown below a red notification embed."""
 
-    def __init__(self, video_id: str, title: str, channel_title: str, status: str):
+    def __init__(self, video_id: str):
         super().__init__(timeout=None)
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        heading = {
-            "upcoming": "🔔 配信予定",
-            "live": "🔴 ライブ配信中",
-            "video": "🎬 新着動画",
-        }.get(status, "YouTube更新")
+        self.add_item(discord.ui.Button(
+            label="YouTubeを開く",
+            style=discord.ButtonStyle.link,
+            url=f"https://www.youtube.com/watch?v={video_id}",
+        ))
 
-        container = discord.ui.Container()
-        container.add_item(discord.ui.TextDisplay(f"## {heading}"))
-        container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.TextDisplay(f"**{discord.utils.escape_markdown(title)[:240]}**"))
-        container.add_item(discord.ui.TextDisplay(
-            f"チャンネル：{discord.utils.escape_markdown(channel_title)[:100]}"
-        ))
-        container.add_item(discord.ui.TextDisplay(f"[YouTubeで開く]({url})"))
-        container.add_item(discord.ui.ActionRow(
-            discord.ui.Button(
-                label="YouTubeを開く",
-                style=discord.ButtonStyle.link,
-                url=url,
-            )
-        ))
-        container.add_item(discord.ui.TextDisplay("-# YouTubeNotice · かざま隊の集いの場"))
-        self.add_item(container)
+
+def notification_embed(item: dict[str, Any]) -> discord.Embed:
+    labels = {
+        "short": "Shorts",
+        "horizontal": "横動画",
+        "live": "ライブ配信",
+        "premiere": "プレミア／配信予定",
+    }
+    content_type = item.get("content_type", "horizontal")
+    heading = labels.get(content_type, "YouTube更新")
+    embed = discord.Embed(
+        title=(item.get("title") or "タイトル未取得")[:256],
+        url=f"https://www.youtube.com/watch?v={item['video_id']}",
+        description=f"**{heading}**\nチャンネル：{discord.utils.escape_markdown(item.get('channel_title') or 'YouTube')[:100]}",
+        color=discord.Colour.red(),
+    )
+    thumbnail = item.get("thumbnail_url") or f"https://i.ytimg.com/vi/{item['video_id']}/hqdefault.jpg"
+    embed.set_thumbnail(url=thumbnail)
+    embed.set_footer(text="YouTubeNotice · かざま隊の集いの場")
+    return embed
 
 
 class YouTubeNotification(commands.Cog):
@@ -308,7 +310,7 @@ class YouTubeNotification(commands.Cog):
             return None
 
     async def fetch_video(self, video_id: str) -> dict[str, Any] | None:
-        payload = await self.api_get("videos", {"part": "snippet", "id": video_id})
+        payload = await self.api_get("videos", {"part": "snippet,contentDetails,liveStreamingDetails", "id": video_id})
         items = (payload or {}).get("items") or []
         if not items:
             return None
@@ -319,12 +321,40 @@ class YouTubeNotification(commands.Cog):
         snippet = raw.get("snippet", {})
         live_state = snippet.get("liveBroadcastContent", "none")
         status = live_state if live_state in {"upcoming", "live"} else "video"
+
+        duration = raw.get("contentDetails", {}).get("duration", "")
+        duration_match = re.fullmatch(
+            r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration
+        )
+        duration_seconds = 0
+        if duration_match:
+            hours, minutes, seconds = (int(value or 0) for value in duration_match.groups())
+            duration_seconds = hours * 3600 + minutes * 60 + seconds
+
+        if status == "live":
+            content_type = "live"
+        elif status == "upcoming":
+            # Data API does not reliably distinguish a Premiere from a scheduled live stream.
+            content_type = "premiere"
+        else:
+            # Aspect ratio is not exposed by the Data API; duration is a best-effort heuristic.
+            content_type = "short" if 0 < duration_seconds <= 180 else "horizontal"
+
+        thumbnails = snippet.get("thumbnails", {})
+        thumbnail = next(
+            (thumbnails[key]["url"] for key in ("maxres", "standard", "high", "medium", "default")
+             if key in thumbnails and thumbnails[key].get("url")),
+            None,
+        )
         return {
             "video_id": raw.get("id"),
             "channel_id": snippet.get("channelId"),
             "title": snippet.get("title") or "タイトル未取得",
             "channel_title": snippet.get("channelTitle") or "YouTube",
             "status": status,
+            "content_type": content_type,
+            "duration_seconds": duration_seconds,
+            "thumbnail_url": thumbnail,
             "published_at": snippet.get("publishedAt"),
         }
 
@@ -378,7 +408,7 @@ class YouTubeNotification(commands.Cog):
                 continue
             payload = await self.api_get(
                 "videos",
-                {"part": "snippet", "id": ",".join(batch)},
+                {"part": "snippet,contentDetails,liveStreamingDetails", "id": ",".join(batch)},
             )
             if payload is None:
                 return None
@@ -492,8 +522,8 @@ class YouTubeNotification(commands.Cog):
             )
 
             configs = self.database().fetchall(
-                """SELECT tc.guild_id, gc.forum_id, gc.upcoming_tag_id,
-                          gc.live_tag_id, gc.video_tag_id
+                """SELECT tc.guild_id, gc.forum_id, gc.short_tag_id, gc.horizontal_tag_id,
+                          gc.live_tag_id, gc.premiere_tag_id, gc.mention_role_id
                    FROM tracked_channels tc
                    JOIN guild_config gc ON gc.guild_id=tc.guild_id
                    WHERE tc.channel_id=? AND (? IS NULL OR tc.guild_id=?)""",
@@ -530,12 +560,14 @@ class YouTubeNotification(commands.Cog):
             log.warning("Configured destination is not a ForumChannel: guild=%s", guild.id)
             return
 
-        status = item["status"]
-        tag_id = (
-            config["upcoming_tag_id"] if status == "upcoming"
-            else config["live_tag_id"] if status == "live"
-            else config["video_tag_id"]
-        )
+        content_type = item.get("content_type", "horizontal")
+        tag_column = {
+            "short": "short_tag_id",
+            "horizontal": "horizontal_tag_id",
+            "live": "live_tag_id",
+            "premiere": "premiere_tag_id",
+        }.get(content_type, "horizontal_tag_id")
+        tag_id = config[tag_column]
         applied_tags = [
             tag for tag in forum.available_tags
             if tag_id is not None and tag.id == tag_id
@@ -543,14 +575,17 @@ class YouTubeNotification(commands.Cog):
         thread_name = discord.utils.escape_markdown(item["title"])[:90].strip()
         if not thread_name:
             thread_name = f"YouTube {item['video_id']}"
+        role_id = config["mention_role_id"]
+        content = f"<@&{role_id}>" if role_id else None
 
         try:
             thread, _starter = await forum.create_thread(
                 name=thread_name,
-                view=YouTubeNoticeView(
-                    item["video_id"], item["title"], item["channel_title"], status,
-                ),
+                content=content,
+                embed=notification_embed(item),
+                view=YouTubeNoticeView(item["video_id"]),
                 applied_tags=applied_tags,
+                allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
                 reason="YouTubeNotice automatic notification",
             )
         except discord.HTTPException:
@@ -581,10 +616,13 @@ class YouTubeNotification(commands.Cog):
             return False
 
         try:
+            role_id = config["mention_role_id"]
+            content = f"<@&{role_id}>" if role_id else None
             await thread.send(
-                view=YouTubeNoticeView(
-                    item["video_id"], item["title"], item["channel_title"], "live",
-                )
+                content=content,
+                embed=notification_embed(item),
+                view=YouTubeNoticeView(item["video_id"]),
+                allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
             )
             forum = guild.get_channel(config["forum_id"])
             live_tag_id = config["live_tag_id"]
@@ -594,10 +632,8 @@ class YouTubeNotification(commands.Cog):
                     None,
                 )
                 if live_tag:
-                    tags = [
-                        tag for tag in thread.applied_tags
-                        if tag.id != config["upcoming_tag_id"]
-                    ]
+                    premiere_tag_id = config["premiere_tag_id"]
+                    tags = [tag for tag in thread.applied_tags if tag.id != premiere_tag_id]
                     try:
                         await thread.edit(applied_tags=[*tags, live_tag])
                     except discord.HTTPException:
