@@ -140,6 +140,42 @@ class TagsModal(ConfigModal):
         await interaction.response.send_message("フォーラムタグを更新しました。", ephemeral=True)
 
 
+class TestLatestModal(ConfigModal):
+    def __init__(self, cog):
+        super().__init__(cog, "最新動画でテスト通知")
+        self.value = discord.ui.TextInput(
+            label="監視中のYouTubeチャンネルID",
+            placeholder="UCから始まる24文字",
+            max_length=24,
+        )
+        self.add_item(self.value)
+
+    async def on_submit(self, interaction):
+        if not await self.allowed(interaction):
+            return
+        channel_id = str(self.value.value).strip()
+        if not CHANNEL_RE.fullmatch(channel_id):
+            await interaction.response.send_message(
+                "チャンネルIDの形式が正しくありません。", ephemeral=True
+            )
+            return
+        core = self.cog.bot.get_cog("YouTubeNotification")
+        if core is None:
+            await interaction.response.send_message(
+                "通知コアが起動していません。", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            ok, message = await core.test_latest_video(interaction.guild.id, channel_id)
+        except Exception:
+            import logging
+            logging.getLogger("youtubenotice.config").exception(
+                "Latest-video test failed."
+            )
+            ok, message = False, "テスト中に予期しないエラーが発生しました。Botログを確認してください。"
+        await interaction.followup.send(("✅ " if ok else "❌ ") + message, ephemeral=True)
+
 class PanelButton(discord.ui.Button):
     def __init__(self, panel, label, action, style):
         super().__init__(label=label, style=style, custom_id=f"yn:panel:{action}")
@@ -163,6 +199,8 @@ class PanelButton(discord.ui.Button):
             await interaction.response.send_modal(TagsModal(self.panel.cog))
         elif self.action == "status":
             await self.panel.cog.show_status(interaction)
+        elif self.action == "test":
+            await interaction.response.send_modal(TestLatestModal(self.panel.cog))
 
 
 class YouTubeConfigPanel(discord.ui.LayoutView):
@@ -195,6 +233,7 @@ class YouTubeConfigPanel(discord.ui.LayoutView):
         card.add_item(discord.ui.ActionRow(
             PanelButton(self, "タグ設定", "tags", discord.ButtonStyle.secondary),
             PanelButton(self, "設定確認", "status", discord.ButtonStyle.secondary),
+            PanelButton(self, "最新動画でテスト通知", "test", discord.ButtonStyle.primary),
         ))
         card.add_item(discord.ui.TextDisplay("-# YouTubeNotice Config System · YN!youtubectrl"))
         self.add_item(card)
