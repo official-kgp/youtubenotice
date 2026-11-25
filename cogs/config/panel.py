@@ -181,6 +181,7 @@ class YouTubeConfigPanel(discord.ui.LayoutView):
         card.add_item(discord.ui.Separator())
         card.add_item(discord.ui.TextDisplay(
             f"{summary}\n\nボタンから各種設定を変更できます。設定変更にはサーバー管理権限が必要です。"
+            "\n通知カテゴリロールはメンバーの選択状況を示すロールです。チャンネル別の通知はDMで配信します。"
         ))
         card.add_item(discord.ui.Separator())
         card.add_item(discord.ui.ActionRow(
