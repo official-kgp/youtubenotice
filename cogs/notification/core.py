@@ -387,7 +387,9 @@ class YouTubeNotification(commands.Cog):
         live_details = raw.get("liveStreamingDetails", {})
         actual_start_time = live_details.get("actualStartTime")
         actual_end_time = live_details.get("actualEndTime")
-        status = live_state if live_state in {"upcoming", "live"} else ("archive" if actual_start_time and actual_end_time else "video")
+        # The API's actualStartTime/actualEndTime also appear for Premieres.
+        # A completed upload is therefore classified using each guild's delivery history.
+        status = live_state if live_state in {"upcoming", "live"} else "video"
 
         duration = raw.get("contentDetails", {}).get("duration", "")
         duration_match = re.fullmatch(
@@ -398,9 +400,7 @@ class YouTubeNotification(commands.Cog):
             hours, minutes, seconds = (int(value or 0) for value in duration_match.groups())
             duration_seconds = hours * 3600 + minutes * 60 + seconds
 
-        if status == "archive":
-            content_type = "archive"
-        elif status == "live":
+        if status == "live":
             content_type = "live"
         elif status == "upcoming":
             # Data API does not reliably distinguish a Premiere from a scheduled live stream.
@@ -611,23 +611,24 @@ class YouTubeNotification(commands.Cog):
                 )
                 if delivery:
                     previous_status = delivery["last_status"]
-                    transition = (
-                        previous_status == "upcoming" and item["status"] in {"live", "video", "archive"}
-                    ) or (previous_status == "live" and item["status"] == "archive")
-                    if transition:
-                        # A scheduled Premiere becomes a regular video after its premiere;
-                        # a completed live broadcast becomes an archive.
-                        if previous_status == "upcoming" and item["status"] in {"video", "archive"}:
-                            # A Premiere finishes as a normal horizontal video, not a live archive.
-                            item["status"] = "video"
-                            item["content_type"] = "horizontal"
-                            item["published_at"] = item.get("actual_start_time") or item.get("published_at")
-                        updated = await self.update_live_thread(config, delivery["thread_id"], item)
-                        if updated:
-                            self.database().execute(
-                                "UPDATE deliveries SET last_status=? WHERE guild_id=? AND video_id=?",
-                                (item["status"], config["guild_id"], video_id),
-                            )
+                    # A completed actual LIVE is an archive. A completed Premiere is a normal video.
+                    if previous_status == "live" and item["status"] == "video":
+                        item["status"] = "archive"
+                        item["content_type"] = "archive"
+                    elif previous_status == "upcoming" and item["status"] == "video":
+                        item["status"] = "video"
+                        item["content_type"] = "horizontal"
+                        item["published_at"] = item.get("actual_start_time") or item.get("published_at")
+
+                    announce_start = previous_status == "upcoming" and item["status"] == "live"
+                    updated = await self.update_live_thread(
+                        config, delivery["thread_id"], item, announce_start=announce_start
+                    )
+                    if updated:
+                        self.database().execute(
+                            "UPDATE deliveries SET last_status=? WHERE guild_id=? AND video_id=?",
+                            (item["status"], config["guild_id"], video_id),
+                        )
                     continue
 
                 should_create = item["status"] in {"upcoming", "live"}
@@ -635,6 +636,90 @@ class YouTubeNotification(commands.Cog):
                     should_create = eligible
                 if should_create:
                     await self.create_forum_thread(config, item)
+
+    async def ensure_forum_tags(
+        self, forum: discord.ForumChannel, guild_id: int, channel_id: str,
+        channel_title: str, content_type: str,
+    ) -> list[discord.ForumTag]:
+        """Create/reuse channel and video-type tags, respecting Discord's 20-tag limit."""
+        db = self.database()
+        type_names = {
+            "short": "Shorts",
+            "horizontal": "横動画",
+            "live": "LIVE",
+            "premiere": "プレミア公開",
+            "archive": "アーカイブ",
+        }
+        type_column = {
+            "short": "short_tag_id",
+            "horizontal": "horizontal_tag_id",
+            "live": "live_tag_id",
+            "premiere": "premiere_tag_id",
+            "archive": "horizontal_tag_id",
+        }.get(content_type, "horizontal_tag_id")
+        config = db.fetchone(
+            f"SELECT {type_column} AS type_tag_id FROM guild_config WHERE guild_id=?",
+            (guild_id,),
+        )
+        available = list(forum.available_tags)
+        changed = False
+
+        type_tag = next(
+            (tag for tag in available if config and config["type_tag_id"] and tag.id == config["type_tag_id"]),
+            None,
+        )
+        if type_tag is None:
+            type_tag = next((tag for tag in available if tag.name == type_names.get(content_type)), None)
+        if type_tag is None and len(available) < 20:
+            type_tag = discord.ForumTag(name=type_names.get(content_type, "横動画"))
+            available.append(type_tag)
+            changed = True
+
+        channel_row = db.fetchone(
+            "SELECT channel_tag_id FROM tracked_channels WHERE guild_id=? AND channel_id=?",
+            (guild_id, channel_id),
+        )
+        channel_tag = next(
+            (tag for tag in available if channel_row and channel_row["channel_tag_id"] and tag.id == channel_row["channel_tag_id"]),
+            None,
+        )
+        safe_channel_name = re.sub(r"[\\n\\r]", " ", channel_title or channel_id).strip()[:20] or channel_id
+        if channel_tag is None:
+            channel_tag = next((tag for tag in available if tag.name == safe_channel_name), None)
+        if channel_tag is None and len(available) < 20:
+            channel_tag = discord.ForumTag(name=safe_channel_name)
+            available.append(channel_tag)
+            changed = True
+
+        if changed:
+            try:
+                await forum.edit(available_tags=available, reason="YouTubeNotice automatic tag provisioning")
+            except discord.HTTPException:
+                log.exception("Could not create automatic Forum tags for guild %s", guild_id)
+                return []
+
+        # Re-read tags after edit so IDs assigned by Discord are used.
+        available = list(forum.available_tags)
+        if changed:
+            try:
+                forum = await forum.guild.fetch_channel(forum.id)
+                available = list(forum.available_tags)
+            except discord.HTTPException:
+                pass
+
+        type_tag = next((tag for tag in available if tag.name == type_names.get(content_type)), type_tag)
+        channel_tag = next((tag for tag in available if tag.name == safe_channel_name), channel_tag)
+        if channel_tag and channel_tag.id:
+            db.execute(
+                "UPDATE tracked_channels SET channel_tag_id=? WHERE guild_id=? AND channel_id=?",
+                (channel_tag.id, guild_id, channel_id),
+            )
+        if type_tag and type_tag.id:
+            db.execute(
+                f"UPDATE guild_config SET {type_column}=?, updated_at=CURRENT_TIMESTAMP WHERE guild_id=?",
+                (type_tag.id, guild_id),
+            )
+        return [tag for tag in (channel_tag, type_tag) if tag is not None and tag.id]
 
     async def create_forum_thread(self, config: Any, item: dict[str, Any]) -> None:
         guild = self.bot.get_guild(config["guild_id"])
@@ -645,19 +730,10 @@ class YouTubeNotification(commands.Cog):
             log.warning("Configured destination is not a ForumChannel: guild=%s", guild.id)
             return
 
-        status = item["status"]
-        content_type = item.get("content_type", "horizontal")
-        tag_column = {
-            "short": "short_tag_id",
-            "horizontal": "horizontal_tag_id",
-            "live": "live_tag_id",
-            "premiere": "premiere_tag_id",
-        }.get(content_type, "horizontal_tag_id")
-        tag_id = config[tag_column]
-        applied_tags = [
-            tag for tag in forum.available_tags
-            if tag_id is not None and tag.id == tag_id
-        ]
+        applied_tags = await self.ensure_forum_tags(
+            forum, guild.id, item["channel_id"], item.get("channel_title", "YouTube"),
+            item.get("content_type", "horizontal"),
+        )
         thread_name = discord.utils.escape_markdown(item["title"])[:90].strip()
         if not thread_name:
             thread_name = f"YouTube {item['video_id']}"
@@ -678,10 +754,12 @@ class YouTubeNotification(commands.Cog):
         self.database().execute(
             """INSERT OR IGNORE INTO deliveries(guild_id, video_id, thread_id, last_status)
                VALUES(?,?,?,?)""",
-            (guild.id, item["video_id"], thread.id, status),
+            (guild.id, item["video_id"], thread.id, item["status"]),
         )
 
-    async def update_live_thread(self, config: Any, thread_id: int, item: dict[str, Any]) -> bool:
+    async def update_live_thread(
+        self, config: Any, thread_id: int, item: dict[str, Any], announce_start: bool = False
+    ) -> bool:
         guild = self.bot.get_guild(config["guild_id"])
         if guild is None:
             return False
@@ -694,38 +772,51 @@ class YouTubeNotification(commands.Cog):
             except discord.HTTPException:
                 log.warning("Could not fetch existing YouTube thread %s", thread_id)
                 return False
-
         if thread is None:
             return False
 
+        role_id = config["mention_role_id"]
+        forum = guild.get_channel(config["forum_id"])
         try:
-            role_id = config["mention_role_id"]
+            new_name = discord.utils.escape_markdown(item.get("title") or "YouTube")[:90].strip()
+            if new_name and thread.name != new_name:
+                try:
+                    await thread.edit(name=new_name, reason="YouTubeNotice video title update")
+                except discord.HTTPException:
+                    log.exception("Could not rename YouTube thread %s", thread_id)
+
             starter = await thread.fetch_message(thread.id)
             await starter.edit(
-                content=None,
-                embed=None,
-                embeds=[],
-                view=notification_layout(item, role_id),
-                allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+                content=None, embed=None, embeds=[], view=notification_layout(item, role_id),
+                allowed_mentions=discord.AllowedMentions(roles=False, users=False, everyone=False),
             )
-            forum = guild.get_channel(config["forum_id"])
-            tag_column = "live_tag_id" if item.get("status") == "live" else "horizontal_tag_id" if item.get("status") == "video" else None
-            target_tag_id = config[tag_column] if tag_column else None
-            if isinstance(forum, discord.ForumChannel) and target_tag_id:
-                target_tag = next(
-                    (tag for tag in forum.available_tags if tag.id == target_tag_id),
-                    None,
+
+            if isinstance(forum, discord.ForumChannel):
+                target_tags = await self.ensure_forum_tags(
+                    forum, guild.id, item["channel_id"], item.get("channel_title", "YouTube"),
+                    item.get("content_type", "horizontal"),
                 )
-                if target_tag:
-                    old_tag_ids = {config["premiere_tag_id"], config["live_tag_id"]}
-                    tags = [tag for tag in thread.applied_tags if tag.id not in old_tag_ids]
-                    try:
-                        await thread.edit(applied_tags=[*tags, target_tag])
-                    except discord.HTTPException:
-                        log.exception("Status tag update failed for thread %s", thread_id)
+                old_type_names = {"Shorts", "横動画", "LIVE", "プレミア公開", "アーカイブ"}
+                tags = [tag for tag in thread.applied_tags if tag.name not in old_type_names and tag.name != (item.get("channel_title") or "YouTube")[:20]]
+                merged = list({tag.id: tag for tag in [*tags, *target_tags]}.values())
+                try:
+                    await thread.edit(applied_tags=merged[:5])
+                except discord.HTTPException:
+                    log.exception("Status/channel tag update failed for thread %s", thread_id)
+
+            if announce_start:
+                announcement = "🔴 **LIVE／プレミア公開が開始されました！**"
+                if role_id:
+                    announcement = f"<@&{role_id}>\n{announcement}"
+                await thread.send(
+                    announcement,
+                    allowed_mentions=discord.AllowedMentions(
+                        roles=True, users=False, everyone=False
+                    ),
+                )
             return True
         except discord.HTTPException:
-            log.exception("Failed to update live status for thread %s", thread_id)
+            log.exception("Failed to update YouTube thread %s", thread_id)
             return False
 
     async def test_latest_video(self, guild_id: int, channel_id: str) -> tuple[bool, str]:
