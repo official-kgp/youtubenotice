@@ -36,9 +36,29 @@ class TestForumSelect(discord.ui.ChannelSelect):
         if not await self.cog.bot.is_owner(interaction.user):
             await interaction.response.send_message("この操作はBot Owner専用です。", ephemeral=True)
             return
-        forum = self.values[0]
-        if not isinstance(forum, discord.ForumChannel):
-            await interaction.response.send_message("フォーラムを選択してください。", ephemeral=True)
+        selected = self.values[0]
+        forum_id = getattr(selected, "id", None)
+        forum = interaction.guild.get_channel(forum_id) if forum_id else None
+        if forum is None and forum_id:
+            try:
+                forum = await interaction.guild.fetch_channel(forum_id)
+            except discord.NotFound:
+                forum = None
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "選択されたチャンネルを確認する権限がありません。", ephemeral=True
+                )
+                return
+            except discord.HTTPException:
+                await interaction.response.send_message(
+                    "チャンネル情報の取得に失敗しました。もう一度お試しください。", ephemeral=True
+                )
+                return
+        if forum is None or forum.type != discord.ChannelType.forum:
+            await interaction.response.send_message(
+                "選択結果をフォーラムとして確認できませんでした。別のフォーラムを選択してください。",
+                ephemeral=True,
+            )
             return
         self.cog.db.execute(
             """INSERT INTO admin_test_config(guild_id,forum_id) VALUES(?,?)
@@ -72,9 +92,14 @@ class TestTypeSelect(discord.ui.Select):
             return
         key = self.values[0]
         forum = interaction.guild.get_channel(self.forum_id)
-        if not isinstance(forum, discord.ForumChannel):
+        if forum is None:
+            try:
+                forum = await interaction.guild.fetch_channel(self.forum_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                forum = None
+        if forum is None or forum.type != discord.ChannelType.forum:
             await interaction.response.edit_message(
-                view=TestNoticeView("保存されたテスト先が見つかりません。YN!youtubetestを再実行してください。")
+                view=TestNoticeView("保存されたテスト先が見つからないか、フォーラムではありません。YN!youtubetestを再実行してください。")
             )
             return
         label, status, content_type = TEST_TYPES[key]
