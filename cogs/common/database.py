@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS tracked_channels (
     guild_id INTEGER NOT NULL,
     channel_id TEXT NOT NULL,
     channel_title TEXT,
+    channel_tag_id INTEGER,
     added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (guild_id, channel_id)
 );
@@ -88,6 +89,11 @@ class Database:
             self.connection.execute(
                 "ALTER TABLE videos ADD COLUMN notification_eligible INTEGER NOT NULL DEFAULT 1"
             )
+        tracked_columns = {
+            row["name"] for row in self.connection.execute("PRAGMA table_info(tracked_channels)").fetchall()
+        }
+        if "channel_tag_id" not in tracked_columns:
+            self.connection.execute("ALTER TABLE tracked_channels ADD COLUMN channel_tag_id INTEGER")
         config_columns = {
             row["name"] for row in self.connection.execute("PRAGMA table_info(guild_config)").fetchall()
         }
