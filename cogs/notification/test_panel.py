@@ -5,12 +5,21 @@ from discord.ext import commands
 
 from cogs.notification.core import notification_layout
 
+
 TEST_TYPES = {
-    "live": ("LIVE", "live", "live", "🔴 テスト配信が開始されました。"),
-    "premiere": ("プレミア公開", "upcoming", "premiere", "📅 プレミア公開の予定枠です。"),
-    "horizontal": ("横動画", "video", "horizontal", "🎬 横動画の公開通知です。"),
-    "short": ("Shorts", "video", "short", "📱 Shortsの公開通知です。"),
+    "live": ("LIVE", "live", "live"),
+    "premiere": ("プレミア公開", "upcoming", "premiere"),
+    "horizontal": ("横動画", "video", "horizontal"),
+    "short": ("Shorts", "video", "short"),
 }
+
+
+class TestNoticeView(discord.ui.LayoutView):
+    def __init__(self, text: str):
+        super().__init__(timeout=None)
+        card = discord.ui.Container()
+        card.add_item(discord.ui.TextDisplay(text))
+        self.add_item(card)
 
 
 class TestForumSelect(discord.ui.ChannelSelect):
@@ -30,12 +39,12 @@ class TestForumSelect(discord.ui.ChannelSelect):
             return
         self.cog.db.execute(
             """INSERT INTO admin_test_config(guild_id,forum_id) VALUES(?,?)
-               ON CONFLICT(guild_id) DO UPDATE SET forum_id=excluded.forum_id""",
+               ON CONFLICT(guild_id) DO UPDATE SET
+               forum_id=excluded.forum_id, updated_at=CURRENT_TIMESTAMP""",
             (interaction.guild.id, forum.id),
         )
         await interaction.response.edit_message(
-            content=f"テスト先を {forum.mention} に保存しました。\nテストする通知タイプを選択してください。",
-            view=TestTypeView(self.cog, forum.id),
+            view=TestTypeView(self.cog, forum.id)
         )
 
 
@@ -59,11 +68,10 @@ class TestTypeSelect(discord.ui.Select):
         forum = interaction.guild.get_channel(self.forum_id)
         if not isinstance(forum, discord.ForumChannel):
             await interaction.response.edit_message(
-                content="保存されたテスト先が見つかりません。コマンドを再実行してください。",
-                view=None,
+                view=TestNoticeView("保存されたテスト先が見つかりません。YN!youtubetestを再実行してください。")
             )
             return
-        label, status, content_type, description = TEST_TYPES[key]
+        label, status, content_type = TEST_TYPES[key]
         item = {
             "video_id": "TEST0000001",
             "channel_id": "UC0000000000000000000000",
@@ -83,21 +91,17 @@ class TestTypeSelect(discord.ui.Select):
                 view=notification_layout(item),
                 reason=f"YouTubeNotice owner-only {label} UI test",
             )
-            await interaction.response.edit_message(
-                content=f"✅ **{label}** のテスト通知を {forum.mention} に投稿しました。\n"
-                        "YouTube API、通常の通知処理、通知履歴は使用していません。",
-                view=None,
-            )
+            result = f"✅ **{label}** のテスト通知を {forum.mention} に投稿しました。"
+            result += "\nYouTube API、通常の通知処理、通知履歴は使用していません。"
+            await interaction.response.edit_message(view=TestNoticeView(result))
         except discord.Forbidden:
-            await interaction.response.edit_message(
-                content="❌ 投稿できませんでした。フォーラムの閲覧・投稿・スレッド作成権限を確認してください。",
-                view=None,
-            )
+            await interaction.response.edit_message(view=TestNoticeView(
+                "❌ 投稿できませんでした。フォーラムの閲覧・投稿・スレッド作成権限を確認してください。"
+            ))
         except discord.HTTPException:
-            await interaction.response.edit_message(
-                content="❌ Discordへの投稿に失敗しました。",
-                view=None,
-            )
+            await interaction.response.edit_message(view=TestNoticeView(
+                "❌ Discordへの投稿に失敗しました。"
+            ))
 
 
 class TestForumView(discord.ui.LayoutView):
@@ -119,6 +123,7 @@ class TestTypeView(discord.ui.LayoutView):
         card = discord.ui.Container()
         card.add_item(discord.ui.TextDisplay("### 通知タイプのテスト"))
         card.add_item(discord.ui.TextDisplay(
+            f"テスト先フォーラム：<#{forum_id}>\n"
             "投稿するサンプル通知を選択してください。実際のYouTube APIや通知履歴には触れません。"
         ))
         card.add_item(discord.ui.ActionRow(TestTypeSelect(cog, forum_id)))
@@ -149,10 +154,7 @@ class YouTubeOwnerTest(commands.Cog):
         if config:
             forum = ctx.guild.get_channel(config["forum_id"])
             if isinstance(forum, discord.ForumChannel):
-                await ctx.send(
-                    f"テスト先：{forum.mention}\nテストする通知タイプを選択してください。",
-                    view=TestTypeView(self, forum.id),
-                )
+                await ctx.send(view=TestTypeView(self, forum.id))
                 return
         await ctx.send(view=TestForumView(self))
 
