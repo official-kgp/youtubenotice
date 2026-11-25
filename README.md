@@ -24,6 +24,9 @@ YouTubeNoticeは、YouTube WebSubによるプッシュ通知とYouTube Data API 
 - Shorts／横動画／ライブ／プレミア・配信予定の種別タグ設定
 - Guildごとの通知メンションロール設定
 - `YN!youtubectrl` によるPrefix設定パネル（チャンネルIDはメッセージ入力方式）
+- Ephemeralによるメンバー別通知設定（チャンネル単位・複数人同時利用）
+- 通知カテゴリごとのロール自動付与・解除
+- Bot Owner専用のAPI非使用UIテスト（LIVE／プレミア／横動画／Shorts）
 
 ## システム構成
 
@@ -32,10 +35,12 @@ YouTubeNoticeは、YouTube WebSubによるプッシュ通知とYouTube Data API 
 | `bot.py` | Bot起動・Cogロード・Prefix管理 |
 | `cogs/notification/` | WebSub受信、YouTube API照会、フォーラム通知 |
 | `cogs/config/` | LayoutView設定パネル、Guild別設定 |
+| `cogs/notification/member_preferences.py` | メンバー通知設定、Ephemeral UI、DM通知 |
+| `cogs/notification/test_panel.py` | Bot Owner専用テスト通知UI |
 | `cogs/common/` | SQLite共有ストレージ |
 | `data/` | 実行時DB（Git管理対象外） |
 | `data_public/` | 公開可能なデータ・仕様 |
-| `.github/v1.0.0/` | v1.0.0の設計・運用ドキュメント |
+| `.github/v1.0.x/` | v1.0.0の設計・運用ドキュメント |
 
 ## 必要環境
 
@@ -119,7 +124,7 @@ YouTube Data API v3が返す情報には、動画の縦横比やプレミア公�
 
 ## ドキュメント
 
-詳細な設計、導入、運用、制約は [v1.0.0ドキュメント](./.github/v1.0.0/README.md) を参照してください。
+詳細な設計、導入、運用、制約は [v1.0.0ドキュメント](./.github/v1.0.x/README.md) を参照してください。
 
 ## License
 
