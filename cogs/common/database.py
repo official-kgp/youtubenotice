@@ -17,6 +17,12 @@ CREATE TABLE IF NOT EXISTS guild_config (
     premiere_tag_id INTEGER,
     archive_tag_id INTEGER,
     mention_role_id INTEGER,
+    dm_notify_role_id INTEGER,
+    live_notify_role_id INTEGER,
+    video_notify_role_id INTEGER,
+    all_notify_role_id INTEGER,
+    member_panel_channel_id INTEGER,
+    member_panel_message_id INTEGER,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -64,6 +70,33 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     last_result TEXT
 );
 
+CREATE TABLE IF NOT EXISTS user_notification_preferences (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    channel_id TEXT NOT NULL,
+    dm INTEGER NOT NULL DEFAULT 0,
+    live INTEGER NOT NULL DEFAULT 0,
+    video INTEGER NOT NULL DEFAULT 0,
+    all_notifications INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (guild_id, user_id, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_notification_deliveries (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    video_id TEXT NOT NULL,
+    event_kind TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (guild_id, user_id, video_id, event_kind)
+);
+
+CREATE TABLE IF NOT EXISTS admin_test_config (
+    guild_id INTEGER PRIMARY KEY,
+    forum_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_tracked_channels_channel
     ON tracked_channels(channel_id);
 CREATE INDEX IF NOT EXISTS idx_videos_channel_status
@@ -98,7 +131,12 @@ class Database:
         config_columns = {
             row["name"] for row in self.connection.execute("PRAGMA table_info(guild_config)").fetchall()
         }
-        for column in ("short_tag_id", "horizontal_tag_id", "premiere_tag_id", "archive_tag_id", "mention_role_id"):
+        for column in (
+            "short_tag_id", "horizontal_tag_id", "premiere_tag_id", "archive_tag_id",
+            "mention_role_id", "dm_notify_role_id", "live_notify_role_id",
+            "video_notify_role_id", "all_notify_role_id",
+            "member_panel_channel_id", "member_panel_message_id",
+        ):
             if column not in config_columns:
                 self.connection.execute(f"ALTER TABLE guild_config ADD COLUMN {column} INTEGER")
         self.connection.commit()
