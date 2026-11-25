@@ -9,7 +9,7 @@ from discord.ext import commands
 log = logging.getLogger("youtubenotice.preferences")
 
 CATEGORIES = {
-    "dm": ("DM通知", "DMで通知を受け取ります。"),
+    "dm": ("DM通知", "配信予定・配信開始・通常動画をDMで受け取ります。"),
     "live": ("LIVE・プレミア公開", "配信開始時のみ通知します。"),
     "video": ("横動画・Shorts", "通常公開された横動画・Shortsを通知します。"),
     "all": ("すべての通知", "配信枠の作成・配信開始・通常動画公開を通知します。"),
@@ -20,6 +20,14 @@ ROLE_COLUMNS = {
     "video": "video_notify_role_id",
     "all": "all_notify_role_id",
 }
+
+
+class SimpleNoticeView(discord.ui.LayoutView):
+    def __init__(self, text: str):
+        super().__init__(timeout=None)
+        card = discord.ui.Container()
+        card.add_item(discord.ui.TextDisplay(text))
+        self.add_item(card)
 
 
 class PublicPanelButton(discord.ui.Button):
@@ -48,11 +56,7 @@ class PublicPanelButton(discord.ui.Button):
             )
             return
         view = ChannelSelectView(cog, interaction.guild.id, channels)
-        await interaction.response.send_message(
-            "## YouTube通知設定\n設定を変更するチャンネルを選択してください。",
-            view=view,
-            ephemeral=True,
-        )
+        await interaction.response.send_message(view=view, ephemeral=True)
         try:
             view.message = await interaction.original_response()
         except discord.HTTPException:
@@ -67,44 +71,36 @@ class PublicNotificationPanel(discord.ui.LayoutView):
         card.add_item(discord.ui.Separator())
         card.add_item(discord.ui.TextDisplay(
             "登録されているYouTubeチャンネルごとに、受け取りたい通知を設定できます。\n"
-            "設定画面は本人にのみ表示されます。他のメンバーの操作と干渉せず、同時に利用できます。"
+            "「通知をカスタマイズする」から編集画面を開いてください。\n"
+            "設定画面は本人にのみ表示され、複数メンバーが同時に利用できます。"
         ))
         card.add_item(discord.ui.ActionRow(PublicPanelButton()))
         card.add_item(discord.ui.TextDisplay("-# YouTubeNotice · Member Notification Preferences"))
         self.add_item(card)
 
 
-class PreferenceCategorySelect(discord.ui.Select):
-    def __init__(self, view: "CategorySelectView"):
-        self.parent_view = view
-        options = [
-            discord.SelectOption(label=label, value=key, description=description)
-            for key, (label, description) in CATEGORIES.items()
-        ]
-        super().__init__(
-            placeholder="変更する通知カテゴリを選択",
-            min_values=1,
-            max_values=1,
-            options=options,
-            custom_id="yn:member-preferences:category",
-        )
+class BackToChannelsButton(discord.ui.Button):
+    def __init__(self, parent):
+        super().__init__(label="チャンネル選択に戻る", style=discord.ButtonStyle.secondary)
+        self.parent = parent
 
     async def callback(self, interaction: discord.Interaction):
-        key = self.values[0]
-        await interaction.response.edit_message(
-            content=f"## {CATEGORIES[key][0]}\nこのチャンネルの通知設定を変更します。",
-            view=PreferenceEditorView(
-                self.parent_view.cog, self.parent_view.guild_id,
-                interaction.user.id, self.parent_view.channel_id, key,
-            ),
-        )
+        await self.parent.back_to_channels(interaction)
+
+
+class FinishPreferenceButton(discord.ui.Button):
+    def __init__(self, parent):
+        super().__init__(label="終了する", style=discord.ButtonStyle.primary)
+        self.parent = parent
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.parent.finish(interaction)
 
 
 class ChannelSelect(discord.ui.Select):
-    def __init__(self, view: "ChannelSelectView", channels: list[Any], offset: int = 0):
-        self.parent_view = view
-        self.offset = offset
-        page = channels[offset:offset + 25]
+    def __init__(self, parent: "ChannelSelectView"):
+        self.parent = parent
+        page = parent.channels[parent.offset:parent.offset + 25]
         options = [
             discord.SelectOption(
                 label=(row["channel_title"] or row["channel_id"])[:100],
@@ -118,17 +114,15 @@ class ChannelSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=options,
-            custom_id=f"yn:member-preferences:channel:{offset}",
         )
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(
-            content="## 通知カテゴリ\n設定したい通知カテゴリを選択してください。",
-            view=CategorySelectView(
-                self.parent_view.cog, self.parent_view.guild_id,
-                interaction.user.id, self.values[0],
-            ),
+        view = CategorySelectView(
+            self.parent.cog, self.parent.guild_id,
+            interaction.user.id, self.values[0],
         )
+        view.message = interaction.message
+        await interaction.response.edit_message(view=view)
 
 
 class ChannelPageButton(discord.ui.Button):
@@ -138,13 +132,12 @@ class ChannelPageButton(discord.ui.Button):
         self.offset = offset
 
     async def callback(self, interaction: discord.Interaction):
-        channels = self.parent.channels
-        await interaction.response.edit_message(
-            content="## YouTube通知設定\n設定を変更するチャンネルを選択してください。",
-            view=ChannelSelectView(
-                self.parent.cog, self.parent.guild_id, channels, self.offset
-            ),
+        view = ChannelSelectView(
+            self.parent.cog, self.parent.guild_id,
+            self.parent.channels, self.offset,
         )
+        view.message = interaction.message
+        await interaction.response.edit_message(view=view)
 
 
 class ChannelSelectView(discord.ui.LayoutView):
@@ -153,10 +146,12 @@ class ChannelSelectView(discord.ui.LayoutView):
         self.cog = cog
         self.guild_id = guild_id
         self.channels = channels
+        self.offset = offset
         self.message = None
         card = discord.ui.Container()
-        card.add_item(discord.ui.TextDisplay("### チャンネル選択"))
-        card.add_item(discord.ui.ActionRow(ChannelSelect(self, channels, offset)))
+        card.add_item(discord.ui.TextDisplay("## YouTube通知設定\n### チャンネル選択"))
+        card.add_item(discord.ui.TextDisplay("設定を変更するYouTubeチャンネルを選択してください。"))
+        card.add_item(discord.ui.ActionRow(ChannelSelect(self)))
         if len(channels) > 25:
             buttons = []
             if offset > 0:
@@ -173,12 +168,34 @@ class ChannelSelectView(discord.ui.LayoutView):
     async def on_timeout(self):
         if self.message:
             try:
-                await self.message.edit(
-                    content="設定画面の有効期限が切れました。公開パネルから再度開いてください。",
-                    view=None,
-                )
+                await self.message.edit(view=SimpleNoticeView(
+                    "設定画面の有効期限が切れました。公開パネルから再度開いてください。"
+                ))
             except discord.HTTPException:
                 pass
+
+
+class PreferenceCategorySelect(discord.ui.Select):
+    def __init__(self, parent: "CategorySelectView"):
+        self.parent = parent
+        options = [
+            discord.SelectOption(label=label, value=key, description=description)
+            for key, (label, description) in CATEGORIES.items()
+        ]
+        super().__init__(
+            placeholder="変更する通知カテゴリを選択",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = PreferenceEditorView(
+            self.parent.cog, self.parent.guild_id,
+            interaction.user.id, self.parent.channel_id, self.values[0],
+        )
+        view.message = interaction.message
+        await interaction.response.edit_message(view=view)
 
 
 class CategorySelectView(discord.ui.LayoutView):
@@ -188,20 +205,15 @@ class CategorySelectView(discord.ui.LayoutView):
         self.guild_id = guild_id
         self.user_id = user_id
         self.channel_id = channel_id
+        self.message = None
         card = discord.ui.Container()
         card.add_item(discord.ui.TextDisplay("### 通知カテゴリ"))
         card.add_item(discord.ui.TextDisplay(
-            "変更するカテゴリを選択してください。各カテゴリは個別に有効・無効を設定できます。"
+            "変更したいカテゴリを選択してください。各カテゴリは個別に有効・無効を設定できます。"
         ))
         card.add_item(discord.ui.ActionRow(PreferenceCategorySelect(self)))
-        card.add_item(discord.ui.ActionRow(
-            discord.ui.Button(
-                label="チャンネル選択に戻る", style=discord.ButtonStyle.secondary,
-                custom_id="yn:member-preferences:back-channels",
-            )
-        ))
+        card.add_item(discord.ui.ActionRow(BackToChannelsButton(self)))
         self.add_item(card)
-        self.children[-1].children[0].callback = self.back_to_channels
 
     async def back_to_channels(self, interaction: discord.Interaction):
         rows = self.cog.db.fetchall(
@@ -209,10 +221,18 @@ class CategorySelectView(discord.ui.LayoutView):
                WHERE guild_id=? ORDER BY channel_title, channel_id""",
             (self.guild_id,),
         )
-        await interaction.response.edit_message(
-            content="## YouTube通知設定\n設定を変更するチャンネルを選択してください。",
-            view=ChannelSelectView(self.cog, self.guild_id, rows),
-        )
+        view = ChannelSelectView(self.cog, self.guild_id, rows)
+        view.message = interaction.message
+        await interaction.response.edit_message(view=view)
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(view=SimpleNoticeView(
+                    "設定画面の有効期限が切れました。公開パネルから再度開いてください。"
+                ))
+            except discord.HTTPException:
+                pass
 
 
 class PreferenceToggleButton(discord.ui.Button):
@@ -228,15 +248,20 @@ class PreferenceToggleButton(discord.ui.Button):
 
 
 class PreferenceEditorView(discord.ui.LayoutView):
-    def __init__(self, cog, guild_id: int, user_id: int, channel_id: str, category: str):
+    def __init__(
+        self, cog, guild_id: int, user_id: int, channel_id: str,
+        category: str, notice: str | None = None,
+    ):
         super().__init__(timeout=300)
         self.cog = cog
         self.guild_id = guild_id
         self.user_id = user_id
         self.channel_id = channel_id
         self.category = category
+        self.message = None
         row = self._get_row()
-        enabled = bool(row[category]) if row else False
+        column = "all_notifications" if category == "all" else category
+        enabled = bool(row[column]) if row else False
         channel = cog.db.fetchone(
             "SELECT channel_title FROM tracked_channels WHERE guild_id=? AND channel_id=?",
             (guild_id, channel_id),
@@ -248,22 +273,14 @@ class PreferenceEditorView(discord.ui.LayoutView):
         card.add_item(discord.ui.TextDisplay(
             f"**対象チャンネル：** {channel_title}\n{description}\n\n"
             f"**現在の設定：** {'有効' if enabled else '無効'}"
+            + (f"\n\n{notice}" if notice else "")
         ))
         card.add_item(discord.ui.ActionRow(PreferenceToggleButton(self, enabled)))
         card.add_item(discord.ui.ActionRow(
-            discord.ui.Button(
-                label="チャンネル選択に戻る", style=discord.ButtonStyle.secondary,
-                custom_id="yn:member-preferences:back",
-            ),
-            discord.ui.Button(
-                label="終了する", style=discord.ButtonStyle.primary,
-                custom_id="yn:member-preferences:finish",
-            ),
+            BackToChannelsButton(self),
+            FinishPreferenceButton(self),
         ))
         self.add_item(card)
-        buttons = self.children[-1].children
-        buttons[0].callback = self.back_to_channels
-        buttons[1].callback = self.finish
 
     def _get_row(self):
         return self.cog.db.fetchone(
@@ -289,13 +306,15 @@ class PreferenceEditorView(discord.ui.LayoutView):
         role_ok, role_message = await self.cog.sync_category_role(
             interaction.guild, interaction.user, self.category, bool(new_value)
         )
-        updated = PreferenceEditorView(
-            self.cog, self.guild_id, self.user_id, self.channel_id, self.category
-        )
-        content = f"設定を{'有効' if new_value else '無効'}にしました。"
+        notice = f"設定を{'有効' if new_value else '無効'}にしました。"
         if not role_ok:
-            content += f"\n{role_message}"
-        await interaction.response.edit_message(content=content, view=updated)
+            notice += f"\n{role_message}"
+        view = PreferenceEditorView(
+            self.cog, self.guild_id, self.user_id, self.channel_id,
+            self.category, notice=notice,
+        )
+        view.message = interaction.message
+        await interaction.response.edit_message(view=view)
 
     async def back_to_channels(self, interaction: discord.Interaction):
         rows = self.cog.db.fetchall(
@@ -303,16 +322,23 @@ class PreferenceEditorView(discord.ui.LayoutView):
                WHERE guild_id=? ORDER BY channel_title, channel_id""",
             (self.guild_id,),
         )
-        await interaction.response.edit_message(
-            content="## YouTube通知設定\n設定を変更するチャンネルを選択してください。",
-            view=ChannelSelectView(self.cog, self.guild_id, rows),
-        )
+        view = ChannelSelectView(self.cog, self.guild_id, rows)
+        view.message = interaction.message
+        await interaction.response.edit_message(view=view)
 
     async def finish(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(
-            content="通知設定を終了しました。設定内容は保存されています。",
-            view=None,
-        )
+        await interaction.response.edit_message(view=SimpleNoticeView(
+            "通知設定を終了しました。設定内容は保存されています。"
+        ))
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(view=SimpleNoticeView(
+                    "設定画面の有効期限が切れました。公開パネルから再度開いてください。"
+                ))
+            except discord.HTTPException:
+                pass
 
 
 class YouTubeMemberPreferences(commands.Cog):
@@ -372,6 +398,8 @@ class YouTubeMemberPreferences(commands.Cog):
                FROM user_notification_preferences WHERE guild_id=? AND channel_id=?""",
             (guild_id, item["channel_id"]),
         )
+        from cogs.notification.core import notification_layout
+
         for row in rows:
             enabled = (
                 bool(row["dm"]) or bool(row["all_notifications"])
@@ -389,9 +417,7 @@ class YouTubeMemberPreferences(commands.Cog):
                 continue
             try:
                 user = self.bot.get_user(row["user_id"]) or await self.bot.fetch_user(row["user_id"])
-                await user.send(view=__import__(
-                    "cogs.notification.core", fromlist=["notification_layout"]
-                ).notification_layout(item))
+                await user.send(view=notification_layout(item))
                 self.db.execute(
                     """INSERT OR IGNORE INTO user_notification_deliveries
                        (guild_id,user_id,video_id,event_kind,created_at)
@@ -412,7 +438,10 @@ class YouTubeMemberPreferences(commands.Cog):
                FROM guild_config WHERE guild_id=?""",
             (ctx.guild.id,),
         )
-        if existing and existing["member_panel_channel_id"] and existing["member_panel_message_id"]:
+        if not existing:
+            await ctx.reply("先に YN!youtubectrl で通知先フォーラムを設定してください。", mention_author=False)
+            return
+        if existing["member_panel_channel_id"] and existing["member_panel_message_id"]:
             channel = ctx.guild.get_channel(existing["member_panel_channel_id"])
             if channel:
                 try:
