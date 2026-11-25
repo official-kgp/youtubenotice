@@ -613,7 +613,7 @@ class YouTubeNotification(commands.Cog):
                 if delivery:
                     previous_status = delivery["last_status"]
                     # A completed actual LIVE is an archive. A completed Premiere is a normal video.
-                    if previous_status == "live" and delivery_item["status"] == "video":
+                    if previous_status in {"live", "archive"} and delivery_item["status"] == "video":
                         delivery_item["status"] = "archive"
                         delivery_item["content_type"] = "archive"
                     elif previous_status == "upcoming" and delivery_item["status"] == "video":
@@ -691,6 +691,11 @@ class YouTubeNotification(commands.Cog):
             channel_tag = discord.ForumTag(name=safe_channel_name)
             available.append(channel_tag)
             changed = True
+        if type_tag is None or channel_tag is None:
+            log.warning(
+                "Forum tag capacity reached or tag creation unavailable: guild=%s channel=%s type=%s",
+                guild_id, channel_id, content_type,
+            )
 
         if changed:
             try:
