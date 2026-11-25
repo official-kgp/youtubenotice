@@ -95,6 +95,46 @@ class MentionRoleModal(discord.ui.Modal):
         await interaction.response.send_message(message, ephemeral=True)
 
 
+class NotificationRolesModal(discord.ui.Modal):
+    def __init__(self, cog):
+        super().__init__(title="通知カテゴリロール設定", timeout=300)
+        self.cog = cog
+        self.dm = discord.ui.TextInput(label="DM通知ロールID（空欄で解除）", required=False, max_length=40)
+        self.live = discord.ui.TextInput(label="LIVE・プレミア公開ロールID", required=False, max_length=40)
+        self.video = discord.ui.TextInput(label="横動画・ShortsロールID", required=False, max_length=40)
+        self.all = discord.ui.TextInput(label="すべての通知ロールID", required=False, max_length=40)
+        for item in (self.dm, self.live, self.video, self.all):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
+            return
+        if not self.cog.db.fetchone(
+            "SELECT 1 FROM guild_config WHERE guild_id=?", (interaction.guild.id,)
+        ):
+            await interaction.response.send_message("先に通知先フォーラムを設定してください。", ephemeral=True)
+            return
+        values = []
+        for field in (self.dm, self.live, self.video, self.all):
+            raw = str(field.value).strip()
+            role_id = snowflake(raw) if raw else None
+            role = interaction.guild.get_role(role_id) if role_id else None
+            if raw and role is None:
+                await interaction.response.send_message(
+                    f"指定されたロールが見つかりません：{raw}", ephemeral=True
+                )
+                return
+            values.append(role.id if role else None)
+        self.cog.db.execute(
+            """UPDATE guild_config SET dm_notify_role_id=?, live_notify_role_id=?,
+               video_notify_role_id=?, all_notify_role_id=?, updated_at=CURRENT_TIMESTAMP
+               WHERE guild_id=?""",
+            (*values, interaction.guild.id),
+        )
+        await interaction.response.send_message("通知カテゴリロールを更新しました。", ephemeral=True)
+
+
 class PanelButton(discord.ui.Button):
     def __init__(self, panel, label, action, style):
         super().__init__(label=label, style=style, custom_id=f"yn:panel:{action}")
@@ -114,6 +154,8 @@ class PanelButton(discord.ui.Button):
             await interaction.response.send_modal(TagsModal(self.panel.cog))
         elif self.action == "role":
             await interaction.response.send_modal(MentionRoleModal(self.panel.cog))
+        elif self.action == "notifyroles":
+            await interaction.response.send_modal(NotificationRolesModal(self.panel.cog))
         elif self.action == "status":
             await self.panel.cog.show_status(interaction)
 
@@ -153,6 +195,7 @@ class YouTubeConfigPanel(discord.ui.LayoutView):
         ))
         card.add_item(discord.ui.ActionRow(
             PanelButton(self, "最新動画でテスト通知", "test", discord.ButtonStyle.primary),
+            PanelButton(self, "通知カテゴリロール", "notifyroles", discord.ButtonStyle.secondary),
         ))
         card.add_item(discord.ui.TextDisplay("-# YouTubeNotice Config System · YN!youtubectrl"))
         self.add_item(card)
@@ -291,6 +334,24 @@ class YouTubeConfig(commands.Cog):
         forum = f"<#{cfg['forum_id']}>" if cfg else "未設定"
         role = f"<@&{cfg['mention_role_id']}>" if cfg and cfg["mention_role_id"] else "未設定"
         lines = [f"**通知先：** {forum}", f"**監視チャンネル：** {len(rows)}件", f"**メンションロール：** {role}"]
+        if cfg:
+            role_rows = self.db.fetchone(
+                """SELECT dm_notify_role_id, live_notify_role_id, video_notify_role_id,
+                          all_notify_role_id FROM guild_config WHERE guild_id=?""",
+                (interaction.guild.id,),
+            )
+            lines.append(
+                "**通知カテゴリロール：** "
+                + " / ".join(
+                    f"{label} <@&{role_rows[column]}>" if role_rows[column] else f"{label} 未設定"
+                    for column, label in (
+                        ("dm_notify_role_id", "DM"),
+                        ("live_notify_role_id", "LIVE"),
+                        ("video_notify_role_id", "動画"),
+                        ("all_notify_role_id", "全通知"),
+                    )
+                )
+            )
         lines.extend(f"• {r['channel_title'] or r['channel_id']} ({r['channel_id']})" for r in rows)
         if cfg:
             lines.append(
