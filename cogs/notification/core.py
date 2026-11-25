@@ -605,6 +605,7 @@ class YouTubeNotification(commands.Cog):
             )
 
             for config in configs:
+                delivery_item = dict(item)
                 delivery = self.database().fetchone(
                     "SELECT thread_id, last_status FROM deliveries WHERE guild_id=? AND video_id=?",
                     (config["guild_id"], video_id),
@@ -612,30 +613,30 @@ class YouTubeNotification(commands.Cog):
                 if delivery:
                     previous_status = delivery["last_status"]
                     # A completed actual LIVE is an archive. A completed Premiere is a normal video.
-                    if previous_status == "live" and item["status"] == "video":
-                        item["status"] = "archive"
-                        item["content_type"] = "archive"
-                    elif previous_status == "upcoming" and item["status"] == "video":
-                        item["status"] = "video"
-                        item["content_type"] = "horizontal"
-                        item["published_at"] = item.get("actual_start_time") or item.get("published_at")
+                    if previous_status == "live" and delivery_item["status"] == "video":
+                        delivery_item["status"] = "archive"
+                        delivery_item["content_type"] = "archive"
+                    elif previous_status == "upcoming" and delivery_item["status"] == "video":
+                        delivery_item["status"] = "video"
+                        delivery_item["content_type"] = "horizontal"
+                        item["published_at"] = delivery_item.get("actual_start_time") or delivery_item.get("published_at")
 
-                    announce_start = previous_status == "upcoming" and item["status"] == "live"
+                    announce_start = previous_status == "upcoming" and delivery_item["status"] == "live"
                     updated = await self.update_live_thread(
-                        config, delivery["thread_id"], item, announce_start=announce_start
+                        config, delivery["thread_id"], delivery_item, announce_start=announce_start
                     )
                     if updated:
                         self.database().execute(
                             "UPDATE deliveries SET last_status=? WHERE guild_id=? AND video_id=?",
-                            (item["status"], config["guild_id"], video_id),
+                            (delivery_item["status"], config["guild_id"], video_id),
                         )
                     continue
 
-                should_create = item["status"] in {"upcoming", "live"}
-                if item["status"] in {"video", "archive"}:
+                should_create = delivery_item["status"] in {"upcoming", "live"}
+                if delivery_item["status"] in {"video", "archive"}:
                     should_create = eligible
                 if should_create:
-                    await self.create_forum_thread(config, item)
+                    await self.create_forum_thread(config, delivery_item)
 
     async def ensure_forum_tags(
         self, forum: discord.ForumChannel, guild_id: int, channel_id: str,
@@ -655,7 +656,7 @@ class YouTubeNotification(commands.Cog):
             "horizontal": "horizontal_tag_id",
             "live": "live_tag_id",
             "premiere": "premiere_tag_id",
-            "archive": "horizontal_tag_id",
+            "archive": "archive_tag_id",
         }.get(content_type, "horizontal_tag_id")
         config = db.fetchone(
             f"SELECT {type_column} AS type_tag_id FROM guild_config WHERE guild_id=?",
