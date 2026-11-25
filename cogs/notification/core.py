@@ -633,7 +633,7 @@ class YouTubeNotification(commands.Cog):
                     not delivery or previous_status == "upcoming"
                 ):
                     event_kind = "live"
-                elif delivery_item["status"] == "video" and (
+                elif delivery_item["status"] == "video" and eligible and (
                     not delivery or previous_status == "upcoming"
                 ):
                     event_kind = "video"
