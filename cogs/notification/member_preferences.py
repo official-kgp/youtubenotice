@@ -371,6 +371,13 @@ class YouTubeMemberPreferences(commands.Cog):
         role = guild.get_role(role_id)
         if role is None:
             return False, "設定された通知ロールが見つかりません。"
+        preference_column = "all_notifications" if category == "all" else category
+        preference = self.db.fetchone(
+            f"""SELECT MAX({preference_column}) AS enabled
+                FROM user_notification_preferences WHERE guild_id=? AND user_id=?""",
+            (guild.id, user.id),
+        )
+        should_have_role = bool(preference["enabled"]) if preference else bool(enabled)
         member = user if isinstance(user, discord.Member) else guild.get_member(user.id)
         if member is None:
             try:
@@ -378,9 +385,9 @@ class YouTubeMemberPreferences(commands.Cog):
             except discord.HTTPException:
                 return False, "メンバー情報を取得できませんでした。"
         try:
-            if enabled and role not in member.roles:
+            if should_have_role and role not in member.roles:
                 await member.add_roles(role, reason="YouTubeNotice notification preference enabled")
-            elif not enabled and role in member.roles:
+            elif not should_have_role and role in member.roles:
                 await member.remove_roles(role, reason="YouTubeNotice notification preference disabled")
             return True, "通知ロールを同期しました。"
         except discord.Forbidden:
