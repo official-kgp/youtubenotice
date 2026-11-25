@@ -619,7 +619,7 @@ class YouTubeNotification(commands.Cog):
                     elif previous_status == "upcoming" and delivery_item["status"] == "video":
                         delivery_item["status"] = "video"
                         delivery_item["content_type"] = "horizontal"
-                        item["published_at"] = delivery_item.get("actual_start_time") or delivery_item.get("published_at")
+                        delivery_item["published_at"] = delivery_item.get("actual_start_time") or delivery_item.get("published_at")
 
                     announce_start = previous_status == "upcoming" and delivery_item["status"] == "live"
                     updated = await self.update_live_thread(
@@ -684,7 +684,7 @@ class YouTubeNotification(commands.Cog):
             (tag for tag in available if channel_row and channel_row["channel_tag_id"] and tag.id == channel_row["channel_tag_id"]),
             None,
         )
-        safe_channel_name = re.sub(r"[\\n\\r]", " ", channel_title or channel_id).strip()[:20] or channel_id
+        safe_channel_name = re.sub(r"[\n\r]", " ", channel_title or channel_id).strip()[:20] or channel_id
         if channel_tag is None:
             channel_tag = next((tag for tag in available if tag.name == safe_channel_name), None)
         if channel_tag is None and len(available) < 20:
@@ -793,12 +793,29 @@ class YouTubeNotification(commands.Cog):
             )
 
             if isinstance(forum, discord.ForumChannel):
+                old_channel = self.database().fetchone(
+                    "SELECT channel_tag_id FROM tracked_channels WHERE guild_id=? AND channel_id=?",
+                    (guild.id, item["channel_id"]),
+                )
+                old_config = self.database().fetchone(
+                    """SELECT short_tag_id, horizontal_tag_id, live_tag_id,
+                              premiere_tag_id, archive_tag_id
+                       FROM guild_config WHERE guild_id=?""",
+                    (guild.id,),
+                )
+                old_tag_ids = {
+                    row["channel_tag_id"] for row in [old_channel] if row and row["channel_tag_id"]
+                }
+                if old_config:
+                    old_tag_ids.update(
+                        old_config[key] for key in old_config.keys()
+                        if old_config[key] is not None
+                    )
                 target_tags = await self.ensure_forum_tags(
                     forum, guild.id, item["channel_id"], item.get("channel_title", "YouTube"),
                     item.get("content_type", "horizontal"),
                 )
-                old_type_names = {"Shorts", "横動画", "LIVE", "プレミア公開", "アーカイブ"}
-                tags = [tag for tag in thread.applied_tags if tag.name not in old_type_names and tag.name != (item.get("channel_title") or "YouTube")[:20]]
+                tags = [tag for tag in thread.applied_tags if tag.id not in old_tag_ids]
                 merged = list({tag.id: tag for tag in [*tags, *target_tags]}.values())
                 try:
                     await thread.edit(applied_tags=merged[:5])
