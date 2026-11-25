@@ -83,7 +83,7 @@ class TestTypeSelect(discord.ui.Select):
             "actual_start_time": "2026-01-01T12:00:00Z" if status == "live" else None,
             "scheduled_start_time": "2026-01-02T12:00:00Z" if status == "upcoming" else None,
             "category_id": "20",
-            "thumbnail_url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+            "thumbnail_url": "https://placehold.co/1280x720/png",
         }
         try:
             await forum.create_thread(
