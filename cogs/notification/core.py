@@ -113,14 +113,12 @@ def notification_layout(item: dict[str, Any], mention_role_id: int | None = None
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Colour.red())
 
-    if mention_role_id:
-        container.add_item(discord.ui.TextDisplay(f"<@&{mention_role_id}>"))
 
     container.add_item(discord.ui.TextDisplay(f"-# {channel}"))
     container.add_item(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
     container.add_item(discord.ui.TextDisplay(f"## {title_icon} ｜ {title}"))
     container.add_item(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.large))
-    container.add_item(discord.ui.TextDisplay("\\n".join(info)))
+    container.add_item(discord.ui.TextDisplay("\n".join(info)))
     container.add_item(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.large))
     container.add_item(discord.ui.MediaGallery(
         discord.MediaGalleryItem(thumbnail, description="YouTube thumbnail")
@@ -129,7 +127,6 @@ def notification_layout(item: dict[str, Any], mention_role_id: int | None = None
     container.add_item(discord.ui.ActionRow(
         discord.ui.Button(
             label="YouTubeを開く",
-            emoji="🔗",
             style=discord.ButtonStyle.link,
             url=f"https://www.youtube.com/watch?v={item['video_id']}",
         )
@@ -138,6 +135,9 @@ def notification_layout(item: dict[str, Any], mention_role_id: int | None = None
     footer_date = stream_date or scheduled_date
     footer = f"-# YouTubeNotice ｜ {footer_date}" if footer_date else "-# YouTubeNotice"
     container.add_item(discord.ui.TextDisplay(footer))
+
+    if mention_role_id:
+        container.add_item(discord.ui.TextDisplay(f"<@&{mention_role_id}>"))
     view.add_item(container)
     return view
 
