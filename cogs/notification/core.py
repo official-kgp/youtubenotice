@@ -67,7 +67,7 @@ VIDEO_CATEGORIES = {
 }
 
 
-def notification_layout(item: dict[str, Any], mention_role_id: int | list[int] | None = None) -> discord.ui.LayoutView:
+def notification_layout(item: dict[str, Any], mention_role_id: int | None = None) -> discord.ui.LayoutView:
     """Build the YouTube notification using Discord Components V2."""
     content_type = item.get("content_type", "horizontal")
     status = item.get("status", "video")
@@ -137,10 +137,7 @@ def notification_layout(item: dict[str, Any], mention_role_id: int | list[int] |
     container.add_item(discord.ui.TextDisplay(footer))
 
     if mention_role_id:
-        role_ids = mention_role_id if isinstance(mention_role_id, list) else [mention_role_id]
-        unique_role_ids = list(dict.fromkeys(role_id for role_id in role_ids if role_id))
-        if unique_role_ids:
-            container.add_item(discord.ui.TextDisplay(" ".join(f"<@&{role_id}>" for role_id in unique_role_ids)))
+        container.add_item(discord.ui.TextDisplay(f"<@&{mention_role_id}>"))
     view.add_item(container)
     return view
 
@@ -600,9 +597,7 @@ class YouTubeNotification(commands.Cog):
 
             configs = self.database().fetchall(
                 """SELECT tc.guild_id, gc.forum_id, gc.short_tag_id, gc.horizontal_tag_id,
-                          gc.live_tag_id, gc.premiere_tag_id, gc.mention_role_id,
-                          gc.dm_notify_role_id, gc.live_notify_role_id,
-                          gc.video_notify_role_id, gc.all_notify_role_id
+                          gc.live_tag_id, gc.premiere_tag_id, gc.mention_role_id
                    FROM tracked_channels tc
                    JOIN guild_config gc ON gc.guild_id=tc.guild_id
                    WHERE tc.channel_id=? AND (? IS NULL OR tc.guild_id=?)""",
@@ -752,27 +747,6 @@ class YouTubeNotification(commands.Cog):
             )
         return [tag for tag in (channel_tag, type_tag) if tag is not None and tag.id]
 
-    @staticmethod
-    def notification_role_ids(config: Any, item: dict[str, Any]) -> list[int]:
-        """Return the general mention role plus the opt-in category roles."""
-        role_ids = []
-        if config["mention_role_id"]:
-            role_ids.append(config["mention_role_id"])
-        status = item.get("status")
-        if status == "upcoming":
-            category_roles = ("all_notify_role_id",)
-        elif status == "live":
-            category_roles = ("live_notify_role_id", "all_notify_role_id")
-        elif status == "video":
-            category_roles = ("video_notify_role_id", "all_notify_role_id")
-        else:
-            category_roles = ()
-        for column in category_roles:
-            role_id = config[column] if column in config.keys() else None
-            if role_id:
-                role_ids.append(role_id)
-        return list(dict.fromkeys(role_ids))
-
     async def create_forum_thread(self, config: Any, item: dict[str, Any]) -> None:
         guild = self.bot.get_guild(config["guild_id"])
         if guild is None:
@@ -789,12 +763,12 @@ class YouTubeNotification(commands.Cog):
         thread_name = discord.utils.escape_markdown(item["title"])[:90].strip()
         if not thread_name:
             thread_name = f"YouTube {item['video_id']}"
-        role_ids = self.notification_role_ids(config, item)
+        role_id = config["mention_role_id"]
 
         try:
             thread, _starter = await forum.create_thread(
                 name=thread_name,
-                view=notification_layout(item, role_ids),
+                view=notification_layout(item, role_id),
                 applied_tags=applied_tags,
                 allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
                 reason="YouTubeNotice automatic notification",
@@ -827,7 +801,7 @@ class YouTubeNotification(commands.Cog):
         if thread is None:
             return False
 
-        role_ids = self.notification_role_ids(config, item)
+        role_id = config["mention_role_id"]
         forum = guild.get_channel(config["forum_id"])
         try:
             new_name = discord.utils.escape_markdown(item.get("title") or "YouTube")[:90].strip()
@@ -839,7 +813,7 @@ class YouTubeNotification(commands.Cog):
 
             starter = await thread.fetch_message(thread.id)
             await starter.edit(
-                content=None, embed=None, embeds=[], view=notification_layout(item, role_ids),
+                content=None, embed=None, embeds=[], view=notification_layout(item, role_id),
                 allowed_mentions=discord.AllowedMentions(roles=False, users=False, everyone=False),
             )
 
@@ -875,9 +849,8 @@ class YouTubeNotification(commands.Cog):
 
             if announce_start:
                 announcement = "🔴 **LIVE／プレミア公開が開始されました！**"
-                mentions = " ".join(f"<@&{role_id}>" for role_id in role_ids)
-                if mentions:
-                    announcement = f"{mentions}\n{announcement}"
+                if role_id:
+                    announcement = f"<@&{role_id}>\n{announcement}"
                 await thread.send(
                     announcement,
                     allowed_mentions=discord.AllowedMentions(
