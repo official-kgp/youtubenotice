@@ -80,6 +80,13 @@ python bot.py
 3. `YN!youtubectrl` を実行します。
 4. 設定パネルから通知先フォーラム、監視チャンネル、タグを登録します。
 
+## メンバー通知設定・テスト
+
+- `YN!youtubepanel`：メンバー向け通知設定パネルを設置・更新（サーバー管理権限が必要）
+- `YN!youtubetest`：Bot Owner専用。YouTube APIを使わず、LIVE／プレミア公開／横動画／ShortsのUIをテスト
+
+メンバー設定はephemeralで表示され、ユーザーごとに独立して操作できます。通知カテゴリロールは `YN!youtubectrl` の「通知カテゴリロール」から設定してください。
+
 ## WebSub署名
 
 WebSub通知はHMAC-SHA1署名を検証します。`.env.example` の `YOUTUBE_WEBSUB_SECRET` に十分長いランダム文字列を設定してください。署名秘密が未設定の場合、Botは購読を送信せず、未署名通知も受け付けません。
