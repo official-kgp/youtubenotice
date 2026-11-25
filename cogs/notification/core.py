@@ -610,8 +610,8 @@ class YouTubeNotification(commands.Cog):
                     "SELECT thread_id, last_status FROM deliveries WHERE guild_id=? AND video_id=?",
                     (config["guild_id"], video_id),
                 )
+                previous_status = delivery["last_status"] if delivery else None
                 if delivery:
-                    previous_status = delivery["last_status"]
                     # A completed actual LIVE is an archive. A completed Premiere is a normal video.
                     if previous_status in {"live", "archive"} and delivery_item["status"] == "video":
                         delivery_item["status"] = "archive"
@@ -621,6 +621,26 @@ class YouTubeNotification(commands.Cog):
                         delivery_item["content_type"] = "horizontal"
                         delivery_item["published_at"] = delivery_item.get("actual_start_time") or delivery_item.get("published_at")
 
+                event_kind = None
+                if delivery_item["status"] == "upcoming" and not delivery:
+                    event_kind = "upcoming"
+                elif delivery_item["status"] == "live" and (
+                    not delivery or previous_status == "upcoming"
+                ):
+                    event_kind = "live"
+                elif delivery_item["status"] == "video" and (
+                    not delivery or previous_status == "upcoming"
+                ):
+                    event_kind = "video"
+
+                if event_kind:
+                    preference_cog = self.bot.get_cog("YouTubeMemberPreferences")
+                    if preference_cog:
+                        await preference_cog.dispatch_dm(
+                            config["guild_id"], delivery_item, event_kind
+                        )
+
+                if delivery:
                     announce_start = previous_status == "upcoming" and delivery_item["status"] == "live"
                     updated = await self.update_live_thread(
                         config, delivery["thread_id"], delivery_item, announce_start=announce_start
