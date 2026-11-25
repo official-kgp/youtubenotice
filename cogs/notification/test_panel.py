@@ -33,6 +33,9 @@ class TestForumSelect(discord.ui.ChannelSelect):
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
+        if not await self.cog.bot.is_owner(interaction.user):
+            await interaction.response.send_message("この操作はBot Owner専用です。", ephemeral=True)
+            return
         forum = self.values[0]
         if not isinstance(forum, discord.ForumChannel):
             await interaction.response.send_message("フォーラムを選択してください。", ephemeral=True)
@@ -64,6 +67,9 @@ class TestTypeSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        if not await self.cog.bot.is_owner(interaction.user):
+            await interaction.response.send_message("この操作はBot Owner専用です。", ephemeral=True)
+            return
         key = self.values[0]
         forum = interaction.guild.get_channel(self.forum_id)
         if not isinstance(forum, discord.ForumChannel):
