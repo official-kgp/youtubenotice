@@ -168,9 +168,7 @@ class ChannelSelectView(discord.ui.LayoutView):
     async def on_timeout(self):
         if self.message:
             try:
-                await self.message.edit(view=SimpleNoticeView(
-                    "設定画面の有効期限が切れました。公開パネルから再度開いてください。"
-                ))
+                await self.message.edit(view=PublicNotificationPanel())
             except discord.HTTPException:
                 pass
 
@@ -228,9 +226,7 @@ class CategorySelectView(discord.ui.LayoutView):
     async def on_timeout(self):
         if self.message:
             try:
-                await self.message.edit(view=SimpleNoticeView(
-                    "設定画面の有効期限が切れました。公開パネルから再度開いてください。"
-                ))
+                await self.message.edit(view=PublicNotificationPanel())
             except discord.HTTPException:
                 pass
 
@@ -334,9 +330,7 @@ class PreferenceEditorView(discord.ui.LayoutView):
     async def on_timeout(self):
         if self.message:
             try:
-                await self.message.edit(view=SimpleNoticeView(
-                    "設定画面の有効期限が切れました。公開パネルから再度開いてください。"
-                ))
+                await self.message.edit(view=PublicNotificationPanel())
             except discord.HTTPException:
                 pass
 
