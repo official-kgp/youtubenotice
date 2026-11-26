@@ -167,6 +167,8 @@ class YouTubeConfigPanel(discord.ui.LayoutView):
             ConfigInputButton(cog, guild_id, "live_tag_id"),
             ConfigInputButton(cog, guild_id, "premiere_tag_id"),
         ))
+        self.add_item(card)
+        card = discord.ui.Container()
         card.add_item(discord.ui.Separator())
         channel_lines = [
             "• " + (row["channel_title"] or row["channel_id"]) + " (" + row["channel_id"] + ")"
