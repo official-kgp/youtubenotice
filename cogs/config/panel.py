@@ -283,96 +283,32 @@ class ConfigOperationSelect(discord.ui.Select):
 
 
 class YouTubeConfigPanel(discord.ui.LayoutView):
-    def __init__(self, cog, guild_id: int, selected_member_panel_channel_id: int | None = None):
+    def __init__(self, cog, guild_id: int):
         super().__init__(timeout=None)
-        self.cog = cog
-        self.guild_id = guild_id
+        self.cog, self.guild_id = cog, guild_id
         cfg = cog.db.fetchone(
-            """SELECT forum_id, mention_role_id, error_log_channel_id,
-                      dm_notify_role_id, live_notify_role_id, video_notify_role_id,
-                      all_notify_role_id, short_tag_id, horizontal_tag_id,
-                      live_tag_id, premiere_tag_id, member_panel_channel_id,
-                      member_panel_message_id
-               FROM guild_config WHERE guild_id=?""", (guild_id,)
+            """SELECT forum_id, mention_role_id FROM guild_config WHERE guild_id=?""",
+            (guild_id,),
         )
-        channels = cog.db.fetchall(
-            "SELECT channel_id, channel_title FROM tracked_channels WHERE guild_id=? ORDER BY channel_title, channel_id",
-            (guild_id,)
+        channels = cog.db.fetchone(
+            "SELECT COUNT(*) AS total FROM tracked_channels WHERE guild_id=?",
+            (guild_id,),
         )
-
-        def value(field, kind):
-            return display_id(cfg[field] if cfg else None, kind)
-
+        forum_id = cfg["forum_id"] if cfg else None
+        mention_role_id = cfg["mention_role_id"] if cfg else None
         card = discord.ui.Container()
-        card.add_item(discord.ui.TextDisplay("# YouTubeNotice | 通知・サーバー設定"))
+        card.add_item(discord.ui.TextDisplay("# YouTubeNotice | Config"))
         card.add_item(discord.ui.Separator())
         card.add_item(discord.ui.TextDisplay(
-            "## 通知先\n**フォーラム：** " + value("forum_id", "channel")
-            + "\n\n## 通知ロール\n"
-            + "\n".join([
-                "**メンション：** " + value("mention_role_id", "role"),
-                "**DM：** " + value("dm_notify_role_id", "role"),
-                "**LIVE：** " + value("live_notify_role_id", "role"),
-                "**横動画・Shorts：** " + value("video_notify_role_id", "role"),
-                "**全通知：** " + value("all_notify_role_id", "role"),
-            ])
-            + "\n\n## 運用設定\n**エラーログ：** " + value("error_log_channel_id", "channel")
+            "**通知先フォーラム：** " + (f"<#{forum_id}>" if forum_id else "未設定")
+            + "\n**監視チャンネル：** " + str(channels["total"] if channels else 0) + "件"
+            + "\n**メンションロール：** " + (f"<@&{mention_role_id}>" if mention_role_id else "未設定")
         ))
-        card.add_item(discord.ui.Separator())
-        card.add_item(discord.ui.TextDisplay("### 通知先・ロールの設定"))
-        card.add_item(discord.ui.ActionRow(ConfigInputButton(cog, guild_id, "forum_id")))
-        card.add_item(discord.ui.ActionRow(
-            ConfigInputButton(cog, guild_id, "mention_role_id"),
-            ConfigInputButton(cog, guild_id, "dm_notify_role_id"),
-            ConfigInputButton(cog, guild_id, "live_notify_role_id"),
-        ))
-        card.add_item(discord.ui.ActionRow(
-            ConfigInputButton(cog, guild_id, "video_notify_role_id"),
-            ConfigInputButton(cog, guild_id, "all_notify_role_id"),
-            ConfigInputButton(cog, guild_id, "error_log_channel_id"),
-        ))
-        card.add_item(discord.ui.Separator())
         card.add_item(discord.ui.TextDisplay(
-            "### フォーラムタグ\n"
-            + "\n".join(
-                "**" + label + "：** " + value(field, "tag")
-                for field, label in TAG_FIELDS.items()
-            )
+            "ボタンから各種設定を変更できます。設定変更にはサーバー管理権限が必要です。"
         ))
-        card.add_item(discord.ui.ActionRow(
-            ConfigInputButton(cog, guild_id, "short_tag_id"),
-            ConfigInputButton(cog, guild_id, "horizontal_tag_id"),
-            ConfigInputButton(cog, guild_id, "live_tag_id"),
-            ConfigInputButton(cog, guild_id, "premiere_tag_id"),
-        ))
-        self.add_item(card)
-        card = discord.ui.Container()
         card.add_item(discord.ui.Separator())
-        channel_lines = [
-            "• " + (row["channel_title"] or row["channel_id"]) + " (" + row["channel_id"] + ")"
-            for row in channels[:15]
-        ] or ["未登録"]
-        if len(channels) > 15:
-            channel_lines.append("ほか " + str(len(channels) - 15) + " チャンネル")
-        member_panel = (
-            f"<#{cfg['member_panel_channel_id']}>"
-            if cfg and cfg["member_panel_channel_id"] and cfg["member_panel_message_id"] else "未設置"
-        )
-        card.add_item(discord.ui.TextDisplay(
-            "### 監視チャンネル（" + str(len(channels)) + "件）\n"
-            + "\n".join(channel_lines)
-            + "\n\n**メンバー向け通知パネル：** " + member_panel
-        ))
-        selected_target = f"<#{selected_member_panel_channel_id}>" if selected_member_panel_channel_id else "未選択"
-        card.add_item(discord.ui.Separator())
-        card.add_item(discord.ui.TextDisplay("### メンバー向け通知パネルの送信先\n**選択中：** " + selected_target))
-        card.add_item(discord.ui.ActionRow(MemberPanelTargetSelect(cog, guild_id, selected_member_panel_channel_id)))
-        card.add_item(discord.ui.ActionRow(PublishMemberPanelButton(cog)))
-        card.add_item(discord.ui.Separator())
-        card.add_item(discord.ui.ActionRow(ConfigOperationSelect(cog)))
-        card.add_item(discord.ui.TextDisplay(
-            "-# 設定ボタンを押すと、このチャンネルに入力案内が届きます。変更後はこのパネル自体が更新されます。"
-        ))
+        card.add_item(discord.ui.ActionRow(ConfigCategorySelect(cog, guild_id)))
         self.add_item(card)
 
 
@@ -460,7 +396,7 @@ class YouTubeConfig(commands.Cog):
                 except discord.HTTPException:
                     pass
 
-    async def run_config_input(self, interaction: discord.Interaction, field: str):
+    async def run_config_input(self, interaction: discord.Interaction, field: str, refresh_detail: bool = False):
         guild = interaction.guild
         if guild is None or field not in ID_FIELDS:
             return
@@ -478,7 +414,10 @@ class YouTubeConfig(commands.Cog):
                 f"UPDATE guild_config SET {field}=NULL, updated_at=CURRENT_TIMESTAMP WHERE guild_id=?",
                 (guild.id,)
             )
-            await self.refresh_panel(interaction)
+            if refresh_detail and interaction.message:
+                await interaction.message.edit(view=make_config_detail_view(self, guild.id, "tags" if field in TAG_FIELDS else "roles" if field in ROLE_FIELDS else "forum" if field == "forum_id" else "errorlog"))
+            else:
+                await self.refresh_panel(interaction)
             await interaction.followup.send("✅ " + ID_FIELDS[field] + "を解除しました。")
             return
 
@@ -540,7 +479,11 @@ class YouTubeConfig(commands.Cog):
                 f"UPDATE guild_config SET {field}=?, updated_at=CURRENT_TIMESTAMP WHERE guild_id=?",
                 (tag.id, guild.id)
             )
-        await self.refresh_panel(interaction)
+        if refresh_detail and interaction.message:
+            category = "tags" if field in TAG_FIELDS else "roles" if field in ROLE_FIELDS else "forum" if field == "forum_id" else "errorlog"
+            await interaction.message.edit(view=make_config_detail_view(self, guild.id, category))
+        else:
+            await self.refresh_panel(interaction)
         await interaction.followup.send("✅ " + ID_FIELDS[field] + "を更新しました。")
 
     async def run_channel_operation(self, interaction: discord.Interaction, action: str):
