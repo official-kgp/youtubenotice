@@ -223,9 +223,12 @@ class MemberPanelTargetSelect(discord.ui.ChannelSelect):
             await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
             return
         target = self.values[0]
+        if target.guild.id != self.guild_id or not isinstance(target, (discord.TextChannel, discord.NewsChannel)):
+            await interaction.response.send_message("テキストチャンネルまたはアナウンスチャンネルを選択してください。", ephemeral=True)
+            return
         self.cog._member_panel_targets[self.guild_id] = target.id
         await interaction.response.edit_message(
-            view=YouTubeConfigPanel(self.cog, self.guild_id, selected_member_panel_channel_id=target.id)
+            view=make_config_detail_view(self.cog, self.guild_id, "memberpanel")
         )
 
 
@@ -242,8 +245,13 @@ class PublishMemberPanelButton(discord.ui.Button):
         await interaction.response.defer()
         channel_id = self.cog._member_panel_targets.get(interaction.guild.id)
         target = interaction.guild.get_channel(channel_id) if channel_id else None
+        if target is None and channel_id:
+            try:
+                target = await interaction.guild.fetch_channel(channel_id)
+            except discord.HTTPException:
+                log.exception("Could not resolve selected member panel destination %s.", channel_id)
         if not isinstance(target, (discord.TextChannel, discord.NewsChannel)):
-            await interaction.followup.send("先に送信先チャンネルを選択してください。")
+            await interaction.followup.send("送信先を取得できませんでした。もう一度チャンネルを選択してください。")
             return
         member_cog = self.cog.bot.get_cog("YouTubeMemberPreferences")
         if member_cog is None:
