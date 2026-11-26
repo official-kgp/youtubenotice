@@ -637,6 +637,10 @@ class YouTubeNotification(commands.Cog):
     async def scan_channel(self, channel_id: str) -> None:
         playlist_id = await self.get_uploads_playlist(channel_id)
         if not playlist_id:
+            await self.report_operational_error(
+                channel_id, "uploads_playlist",
+                "Uploads Playlist IDを取得できませんでした。YouTube APIの応答またはチャンネル情報を確認してください。",
+            )
             return
 
         playlist = await self.api_get(
@@ -648,6 +652,10 @@ class YouTubeNotification(commands.Cog):
             },
         )
         if playlist is None:
+            await self.report_operational_error(
+                channel_id, "playlist_items_api",
+                "playlistItems.list の取得に失敗しました。APIキー・クォータ・YouTube APIの状態を確認してください。",
+            )
             return
 
         upload_ids = [
@@ -684,15 +692,24 @@ class YouTubeNotification(commands.Cog):
         if videos is None:
             # Do not mark the initial baseline complete after a transient API
             # error; otherwise old uploads could be misclassified as new later.
+            await self.report_operational_error(
+                channel_id, "videos_api",
+                "videos.list の取得に失敗しました。APIキー・クォータ・YouTube APIの状態を確認してください。",
+            )
             return
         for item in videos:
             if item.get("channel_id") != channel_id:
                 continue
-            # During the first baseline scan, do not create threads for old
-            # ordinary uploads. WebSub handles fresh feed events; upcoming/live
-            # broadcasts are still important and are posted immediately.
             allow_new_video = not first_scan
-            await self.process_item(item, allow_new_video=allow_new_video)
+            try:
+                await self.process_item(item, allow_new_video=allow_new_video)
+            except Exception as exc:
+                log.exception("Video pipeline item failed: video=%s channel=%s", item.get("video_id"), channel_id)
+                await self.report_operational_error(
+                    channel_id, "video_delivery",
+                    f"動画通知処理に失敗しました。video_id={item.get('video_id')}",
+                    exception=exc,
+                )
 
         self.database().execute(
             "UPDATE channel_cache SET initialized=1, last_scanned_at=? WHERE channel_id=?",
@@ -725,18 +742,25 @@ class YouTubeNotification(commands.Cog):
             self.database().execute(
                 """INSERT INTO videos(
                        video_id, channel_id, title, channel_title, status,
-                       published_at, notification_eligible, updated_at
-                   ) VALUES(?,?,?,?,?,?,?,?)
+                       published_at, notification_eligible, updated_at,
+                       actual_start_time, actual_end_time, scheduled_start_time, content_type
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(video_id) DO UPDATE SET
                    title=excluded.title,
                    channel_title=excluded.channel_title,
                    status=excluded.status,
                    published_at=excluded.published_at,
                    notification_eligible=MAX(videos.notification_eligible, excluded.notification_eligible),
+                   actual_start_time=COALESCE(excluded.actual_start_time, videos.actual_start_time),
+                   actual_end_time=COALESCE(excluded.actual_end_time, videos.actual_end_time),
+                   scheduled_start_time=COALESCE(excluded.scheduled_start_time, videos.scheduled_start_time),
+                   content_type=excluded.content_type,
                    updated_at=excluded.updated_at""",
                 (
                     video_id, channel_id, item["title"], item["channel_title"],
                     item["status"], item.get("published_at"), int(eligible), utc_now(),
+                    item.get("actual_start_time"), item.get("actual_end_time"),
+                    item.get("scheduled_start_time"), item.get("content_type"),
                 ),
             )
 
@@ -757,14 +781,31 @@ class YouTubeNotification(commands.Cog):
                 )
                 previous_status = delivery["last_status"] if delivery else None
                 if delivery:
-                    # A completed actual LIVE is an archive. A completed Premiere is a normal video.
+                    # A previously observed LIVE is unambiguously archived.
                     if previous_status in {"live", "archive"} and delivery_item["status"] == "video":
                         delivery_item["status"] = "archive"
                         delivery_item["content_type"] = "archive"
                     elif previous_status == "upcoming" and delivery_item["status"] == "video":
-                        delivery_item["status"] = "video"
+                        # The public Data API cannot reliably distinguish a completed
+                        # Premiere from a scheduled livestream if LIVE was never observed.
                         delivery_item["content_type"] = "horizontal"
-                        delivery_item["published_at"] = delivery_item.get("actual_start_time") or delivery_item.get("published_at")
+                        delivery_item["published_at"] = (
+                            delivery_item.get("actual_start_time")
+                            or delivery_item.get("published_at")
+                        )
+                        if delivery_item.get("actual_start_time"):
+                            await self.report_operational_error(
+                                channel_id,
+                                "missed_live_transition",
+                                (
+                                    "配信予定から公開済みへの遷移を検知しましたが、LIVE状態を観測できませんでした。"
+                                    f" video_id={video_id}\n"
+                                    f"actualStartTime={delivery_item.get('actual_start_time')}\n"
+                                    f"actualEndTime={delivery_item.get('actual_end_time')}\n"
+                                    "YouTube Data APIでは終了済みPremiereとLIVEアーカイブを確実に区別できないため、"
+                                    "誤分類を避けて通常動画として更新しています。"
+                                ),
+                            )
 
                 event_kind = None
                 if delivery_item["status"] == "upcoming" and not delivery:
@@ -958,7 +999,7 @@ class YouTubeNotification(commands.Cog):
 
             starter = await thread.fetch_message(thread.id)
             await starter.edit(
-                content=None, embed=None, embeds=[], view=notification_layout(item, role_id),
+                content=None, embeds=[], view=notification_layout(item, role_id),
                 allowed_mentions=discord.AllowedMentions(roles=False, users=False, everyone=False),
             )
 
@@ -1005,6 +1046,20 @@ class YouTubeNotification(commands.Cog):
             return True
         except discord.HTTPException:
             log.exception("Failed to update YouTube thread %s", thread_id)
+            await self.report_operational_error(
+                item.get("channel_id", ""),
+                "forum_thread_update",
+                f"フォーラム投稿の更新に失敗しました。thread_id={thread_id}, video_id={item.get('video_id')}",
+            )
+            return False
+        except Exception as exc:
+            log.exception("Unexpected error while updating YouTube thread %s", thread_id)
+            await self.report_operational_error(
+                item.get("channel_id", ""),
+                "forum_thread_update_unexpected",
+                f"フォーラム投稿の更新中に予期しないエラーが発生しました。thread_id={thread_id}, video_id={item.get('video_id')}",
+                exception=exc,
+            )
             return False
 
     async def test_latest_video(self, guild_id: int, channel_id: str) -> tuple[bool, str]:
@@ -1150,19 +1205,35 @@ class YouTubeNotification(commands.Cog):
     async def before_renew_subscriptions(self) -> None:
         await self.bot.wait_until_ready()
 
-    @tasks.loop(minutes=20)
+    @tasks.loop(minutes=5)
     async def reconcile_channels(self) -> None:
         if not API_KEY:
             return
         rows = self.database().fetchall(
             "SELECT DISTINCT channel_id FROM tracked_channels ORDER BY channel_id"
         )
-        log.info("Starting 20-minute reconciliation for %d channel(s).", len(rows))
+        channel_count = max(1, len(rows))
+        target_daily_units = max(1000, int(os.getenv("YOUTUBE_DAILY_QUOTA_BUDGET", "8000")))
+        interval_minutes = max(
+            5, int((1440 * 2 * channel_count + target_daily_units - 1) / target_daily_units)
+        )
+        if self.reconcile_channels.minutes != interval_minutes:
+            self.reconcile_channels.change_interval(minutes=interval_minutes)
+        log.info(
+            "Starting reconciliation pipeline: channels=%d interval=%dm queue=%d/%d",
+            len(rows), interval_minutes, self.websub_queue.qsize(), WEBSUB_QUEUE_LIMIT,
+        )
         for row in rows:
+            channel_id = row["channel_id"]
             try:
-                await self.scan_channel(row["channel_id"])
-            except Exception:
-                log.exception("Reconciliation failed for channel %s", row["channel_id"])
+                await self.scan_channel(channel_id)
+            except Exception as exc:
+                log.exception("Reconciliation failed for channel %s", channel_id)
+                await self.report_operational_error(
+                    channel_id, "reconciliation",
+                    "定期照合処理に失敗しました。",
+                    exception=exc,
+                )
             await asyncio.sleep(0.3)
 
     @reconcile_channels.before_loop
