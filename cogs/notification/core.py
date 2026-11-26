@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 import discord
@@ -39,6 +40,8 @@ WEB_PORT = int(os.getenv("YOUTUBE_WEB_PORT", "8765"))
 SUBSCRIPTION_LEASE = 864000
 SCAN_BATCH_SIZE = 50
 LATEST_UPLOADS_PER_CHANNEL = 10
+WEBSUB_QUEUE_LIMIT = 500
+ERROR_REPORT_COOLDOWN = timedelta(minutes=15)
 
 
 def utc_now() -> str:
@@ -154,6 +157,9 @@ class YouTubeNotification(commands.Cog):
         self.pending_subscriptions: dict[str, datetime] = {}
         self.pending_unsubscribes: dict[str, datetime] = {}
         self._startup_renewal = True
+        self.websub_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(maxsize=WEBSUB_QUEUE_LIMIT)
+        self.websub_worker_task: asyncio.Task | None = None
+        self._queued_websub_events: set[tuple[str, str]] = set()
 
     async def cog_load(self) -> None:
         if not API_KEY:
@@ -175,12 +181,19 @@ class YouTubeNotification(commands.Cog):
         await site.start()
         log.info("WebSub callback listener started at %s:%s", WEB_HOST, WEB_PORT)
 
+        self.websub_worker_task = asyncio.create_task(self.websub_event_worker(), name="youtubenotice-websub-pipeline")
         self.renew_subscriptions.start()
         self.reconcile_channels.start()
 
     async def cog_unload(self) -> None:
         self.renew_subscriptions.cancel()
         self.reconcile_channels.cancel()
+        if self.websub_worker_task:
+            self.websub_worker_task.cancel()
+            try:
+                await self.websub_worker_task
+            except asyncio.CancelledError:
+                pass
         if self.web_runner:
             await self.web_runner.cleanup()
         if self.session and not self.session.closed:
@@ -291,7 +304,14 @@ class YouTubeNotification(commands.Cog):
             (channel_id,),
         )
         if tracked:
-            asyncio.create_task(self.process_websub_video(video_id, channel_id))
+            event = (video_id, channel_id)
+            if event not in self._queued_websub_events:
+                try:
+                    self.websub_queue.put_nowait(event)
+                    self._queued_websub_events.add(event)
+                except asyncio.QueueFull:
+                    log.error("WebSub processing queue is full; event dropped: video=%s channel=%s", video_id, channel_id)
+                    await self.report_operational_error(channel_id, "websub_queue_full", f"WebSubイベントを処理キューに格納できませんでした。video_id={video_id}")
 
         return web.Response(status=204)
 
@@ -350,10 +370,134 @@ class YouTubeNotification(commands.Cog):
             log.exception("WebSub request failed for %s", channel_id)
             return False
 
+    async def websub_event_worker(self) -> None:
+        """Process WebSub events through a bounded FIFO pipeline."""
+        while True:
+            video_id, channel_id = await self.websub_queue.get()
+            event = (video_id, channel_id)
+            try:
+                await self.process_websub_video(video_id, channel_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.exception("WebSub pipeline failed: video=%s channel=%s", video_id, channel_id)
+                await self.report_operational_error(
+                    channel_id, "websub_pipeline",
+                    f"WebSubイベントの取得・通知処理に失敗しました。video_id={video_id}",
+                    exception=exc,
+                )
+            finally:
+                self._queued_websub_events.discard(event)
+                self.websub_queue.task_done()
+
     async def process_websub_video(self, video_id: str, channel_id: str) -> None:
         item = await self.fetch_video(video_id)
         if item and item["channel_id"] == channel_id:
             await self.process_item(item, allow_new_video=True, force_new_video=True)
+        else:
+            await self.report_operational_error(
+                channel_id, "websub_video_fetch",
+                f"WebSubイベントの動画情報を取得できませんでした。video_id={video_id}",
+            )
+
+    async def report_operational_error(
+        self,
+        channel_id: str,
+        stage: str,
+        message: str,
+        exception: Exception | None = None,
+    ) -> None:
+        """Send rate-limited operational alerts to each configured guild log channel."""
+        rows = self.database().fetchall(
+            """SELECT DISTINCT tc.guild_id, gc.error_log_channel_id
+               FROM tracked_channels tc
+               JOIN guild_config gc ON gc.guild_id=tc.guild_id
+               WHERE tc.channel_id=? AND gc.error_log_channel_id IS NOT NULL""",
+            (channel_id,),
+        )
+        now = datetime.now(timezone.utc)
+        error_key = f"{stage}:{channel_id}"[:180]
+        for row in rows:
+            guild_id = row["guild_id"]
+            previous = self.database().fetchone(
+                "SELECT last_sent_at FROM error_report_state WHERE guild_id=? AND error_key=?",
+                (guild_id, error_key),
+            )
+            if previous:
+                try:
+                    last_sent = datetime.fromisoformat(previous["last_sent_at"])
+                    if last_sent.tzinfo is None:
+                        last_sent = last_sent.replace(tzinfo=timezone.utc)
+                    if now - last_sent < ERROR_REPORT_COOLDOWN:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                continue
+            target = guild.get_channel(row["error_log_channel_id"])
+            if target is None:
+                try:
+                    target = await guild.fetch_channel(row["error_log_channel_id"])
+                except discord.HTTPException:
+                    log.warning("Configured error log channel unavailable: guild=%s channel=%s", guild_id, row["error_log_channel_id"])
+                    continue
+            detail = message[:2500]
+            if exception is not None:
+                detail += f"\n\n例外: {type(exception).__name__}: {str(exception)[:500]}"
+            embed = discord.Embed(
+                title="⚠️ YouTubeNotice | 運用エラー",
+                description=detail[:4000],
+                colour=discord.Colour.orange(),
+                timestamp=now,
+            )
+            embed.add_field(name="処理段階", value=stage[:256], inline=True)
+            embed.add_field(name="YouTube Channel ID", value=channel_id[:100], inline=True)
+            try:
+                await target.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                self.database().execute(
+                    """INSERT INTO error_report_state(guild_id,error_key,last_sent_at)
+                       VALUES(?,?,?)
+                       ON CONFLICT(guild_id,error_key) DO UPDATE SET last_sent_at=excluded.last_sent_at""",
+                    (guild_id, error_key, now.isoformat()),
+                )
+            except discord.HTTPException:
+                log.exception("Could not send operational error report: guild=%s channel=%s", guild_id, row["error_log_channel_id"])
+
+    async def resolve_channel_id(self, raw_value: str) -> str | None:
+        """Resolve a channel ID, @handle, or supported YouTube channel URL."""
+        value = (raw_value or "").strip()
+        if CHANNEL_ID_RE.fullmatch(value):
+            return value
+        handle = None
+        username = None
+        if value.startswith("@"):
+            handle = value[1:]
+        elif value.startswith(("http://", "https://")):
+            parsed = urlparse(value)
+            host = (parsed.hostname or "").lower()
+            if host not in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+                return None
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) >= 2 and parts[0] == "channel" and CHANNEL_ID_RE.fullmatch(parts[1]):
+                return parts[1]
+            if parts and parts[0].startswith("@"):
+                handle = parts[0][1:]
+            elif len(parts) >= 2 and parts[0] == "user":
+                username = parts[1]
+            else:
+                return None
+        else:
+            return None
+        if handle:
+            payload = await self.api_get("channels", {"part": "id", "forHandle": handle})
+        elif username:
+            payload = await self.api_get("channels", {"part": "id", "forUsername": username})
+        else:
+            return None
+        items = (payload or {}).get("items") or []
+        channel_id = items[0].get("id") if items else None
+        return channel_id if isinstance(channel_id, str) and CHANNEL_ID_RE.fullmatch(channel_id) else None
 
     async def api_get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any] | None:
         if not API_KEY or not self.session:
@@ -429,6 +573,7 @@ class YouTubeNotification(commands.Cog):
             "category_id": snippet.get("categoryId"),
             "published_at": snippet.get("publishedAt"),
             "actual_start_time": actual_start_time,
+            "actual_end_time": actual_end_time,
             "scheduled_start_time": scheduled_start_time,
         }
 
