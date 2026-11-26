@@ -270,9 +270,22 @@ class YouTubeConfig(commands.Cog):
         row = self.db.fetchone(f"SELECT {field} FROM guild_config WHERE guild_id=?", (guild_id,))
         return row[field] if row else None
 
-    async def cog_load(self):
-        # The message itself is created by YN!youtubectrl; persistent IDs are registered here.
-        self.bot.add_view(YouTubeConfigPanel(self, 0))
+    @commands.Cog.listener()
+    async def on_ready(self):
+        # Register persistent components only after every extension has loaded.
+        # The notification core creates youtube_db in its own cog_load; relying on
+        # extension filesystem order here can prevent this Cog from loading.
+        if getattr(self.bot, "youtube_db", None) is None:
+            log.error("YouTubeConfig persistent view registration skipped: database is unavailable.")
+            return
+        if getattr(self, "_persistent_view_registered", False):
+            return
+        try:
+            self.bot.add_view(YouTubeConfigPanel(self, 0))
+            self._persistent_view_registered = True
+            log.info("YouTubeConfig persistent view registered.")
+        except Exception:
+            log.exception("Could not register YouTubeConfig persistent view.")
 
     async def refresh_panel(self, interaction: discord.Interaction):
         if interaction.message and interaction.guild:
