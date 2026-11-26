@@ -116,6 +116,7 @@ Botには対象フォーラムに対する次の権限が必要です。
 - Embed Links
 - Send Messages in Threads
 - Manage Threads
+- Manage Messages（入力モードで送信されたID・URLメッセージの削除）
 
 BotのMessage Content IntentをDeveloper Portalとコードの両方で有効にしてください。
 
@@ -125,7 +126,7 @@ BotのMessage Content IntentをDeveloper Portalとコードの両方で有効に
 YN!youtubectrl
 ```
 
-操作セレクトから次を設定できます。必要な入力がある操作では、次の画面で「IDを入力する」を押すと120秒の入力待ちモードに入ります。入力モードを開始するまではBotはメッセージを待ち受けません。
+操作セレクトから次を設定できます。必要な入力がある操作では、次の画面で「IDを入力する」を押すと120秒の入力待ちモードに入ります。入力モードを開始するまではBotはメッセージを待ち受けません。入力は元のテキストチャンネルに送信され、Botは削除を試みます。削除にはManage Messages権限が必要です。
 
 | 操作 | 説明 |
 |---|---|
