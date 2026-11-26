@@ -362,12 +362,8 @@ class YouTubeConfig(commands.Cog):
 
     async def refresh_panel(self, interaction: discord.Interaction):
         if interaction.message and interaction.guild:
-            selected_id = self._member_panel_targets.get(interaction.guild.id)
             await interaction.message.edit(
-                view=YouTubeConfigPanel(
-                    self, interaction.guild.id,
-                    selected_member_panel_channel_id=selected_id,
-                )
+                view=YouTubeConfigPanel(self, interaction.guild.id)
             )
 
     async def read_channel_message(self, interaction: discord.Interaction, title: str) -> str | None:
