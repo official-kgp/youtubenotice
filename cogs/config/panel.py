@@ -135,11 +135,77 @@ class NotificationRolesModal(discord.ui.Modal):
         await interaction.response.send_message("通知カテゴリロールを更新しました。", ephemeral=True)
 
 
-class PanelButton(discord.ui.Button):
-    def __init__(self, panel, label, action, style):
-        super().__init__(label=label, style=style, custom_id=f"yn:panel:{action}")
-        self.panel = panel
+class InputActionButton(discord.ui.Button):
+    def __init__(self, cog, action: str):
+        super().__init__(
+            label="IDを入力する",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"yn:panel:input:{action}",
+        )
+        self.cog = cog
         self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
+            return
+        await self.cog.prompt_channel_id(interaction, self.action)
+
+
+class InputActionBackButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="閉じる", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(
+            view=discord.ui.LayoutView(timeout=60)
+        )
+
+
+class InputActionView(discord.ui.LayoutView):
+    def __init__(self, cog, action: str):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.action = action
+        instructions = {
+            "forum": "通知先にするDiscordフォーラムのチャンネルIDまたはメンションを入力します。",
+            "add": "監視対象に追加するYouTubeチャンネルのID・@ハンドル・チャンネルURLを入力します。",
+            "remove": "監視対象から削除するYouTubeチャンネルのID・@ハンドル・チャンネルURLを入力します。",
+            "test": "最新動画を取得してテスト通知するYouTubeチャンネルのID・@ハンドル・チャンネルURLを入力します。",
+            "errorlog": "エラーログ送信先のテキストチャンネルIDまたはメンションを入力します。解除する場合は「解除」と入力します。",
+        }
+        card = discord.ui.Container()
+        card.add_item(discord.ui.TextDisplay("## 入力モード"))
+        card.add_item(discord.ui.TextDisplay(
+            instructions.get(action, "入力する値を確認してください。")
+            + "\n「IDを入力する」を押すと、120秒間の入力待ち状態になります。"
+        ))
+        card.add_item(discord.ui.ActionRow(InputActionButton(cog, action), InputActionBackButton()))
+        self.add_item(card)
+
+
+class PanelActionSelect(discord.ui.Select):
+    def __init__(self, cog):
+        self.cog = cog
+        options = [
+            discord.SelectOption(label="通知先フォーラムを設定", value="forum", emoji="📌"),
+            discord.SelectOption(label="YouTubeチャンネルを追加", value="add", emoji="➕"),
+            discord.SelectOption(label="YouTubeチャンネルを削除", value="remove", emoji="➖"),
+            discord.SelectOption(label="最新動画でテスト通知", value="test", emoji="🧪"),
+            discord.SelectOption(label="動画種別タグを設定", value="tags", emoji="🏷️"),
+            discord.SelectOption(label="通知メンションロールを設定", value="role", emoji="🔔"),
+            discord.SelectOption(label="通知カテゴリロールを設定", value="notifyroles", emoji="👥"),
+            discord.SelectOption(label="メンバー向け通知パネルを送信・更新", value="memberpanel", emoji="📨"),
+            discord.SelectOption(label="エラーログ送信先を設定", value="errorlog", emoji="🧾"),
+            discord.SelectOption(label="現在の設定を確認", value="status", emoji="📋"),
+        ]
+        super().__init__(
+            placeholder="実行する操作を選択してください",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="yn:panel:operation",
+        )
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.guild:
@@ -148,16 +214,33 @@ class PanelButton(discord.ui.Button):
         if not interaction.user.guild_permissions.manage_guild:
             await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
             return
-        if self.action in {"forum", "add", "remove", "test"}:
-            await self.panel.cog.prompt_channel_id(interaction, self.action)
-        elif self.action == "tags":
-            await interaction.response.send_modal(TagsModal(self.panel.cog))
-        elif self.action == "role":
-            await interaction.response.send_modal(MentionRoleModal(self.panel.cog))
-        elif self.action == "notifyroles":
-            await interaction.response.send_modal(NotificationRolesModal(self.panel.cog))
-        elif self.action == "status":
-            await self.panel.cog.show_status(interaction)
+
+        action = self.values[0]
+        if action in {"forum", "add", "remove", "test", "errorlog"}:
+            await interaction.response.send_message(
+                view=InputActionView(self.cog, action),
+                ephemeral=True,
+            )
+        elif action == "tags":
+            await interaction.response.send_modal(TagsModal(self.cog))
+        elif action == "role":
+            await interaction.response.send_modal(MentionRoleModal(self.cog))
+        elif action == "notifyroles":
+            await interaction.response.send_modal(NotificationRolesModal(self.cog))
+        elif action == "memberpanel":
+            member_cog = self.cog.bot.get_cog("YouTubeMemberPreferences")
+            if member_cog is None:
+                await interaction.response.send_message(
+                    "メンバー通知機能が読み込まれていません。", ephemeral=True
+                )
+                return
+            ok, result = await member_cog.publish_panel(interaction.guild, interaction.channel)
+            await interaction.response.send_message(
+                ("✅ " if ok else "❌ ") + result,
+                ephemeral=True,
+            )
+        elif action == "status":
+            await self.cog.show_status(interaction)
 
 
 class YouTubeConfigPanel(discord.ui.LayoutView):
@@ -165,39 +248,40 @@ class YouTubeConfigPanel(discord.ui.LayoutView):
         super().__init__(timeout=None)
         self.cog = cog
         if guild_id is None:
-            summary = "各サーバーの保存済み設定を読み込みます。"
+            summary = "サーバーの保存済み設定を読み込みます。"
         else:
             cfg = cog.db.fetchone(
-                "SELECT forum_id, mention_role_id FROM guild_config WHERE guild_id=?",
+                """SELECT forum_id, mention_role_id, error_log_channel_id
+                   FROM guild_config WHERE guild_id=?""",
                 (guild_id,),
             )
-            channels = cog.db.fetchall("SELECT channel_id FROM tracked_channels WHERE guild_id=?", (guild_id,))
+            channels = cog.db.fetchall(
+                "SELECT channel_id FROM tracked_channels WHERE guild_id=?",
+                (guild_id,),
+            )
             forum = f"<#{cfg['forum_id']}>" if cfg else "未設定"
             role = f"<@&{cfg['mention_role_id']}>" if cfg and cfg["mention_role_id"] else "未設定"
-            summary = f"**通知先フォーラム：** {forum}\n**監視チャンネル：** {len(channels)}件\n**メンションロール：** {role}"
+            error_channel = (
+                f"<#{cfg['error_log_channel_id']}>"
+                if cfg and cfg["error_log_channel_id"] else "未設定"
+            )
+            summary = (
+                f"**通知先フォーラム：** {forum}\n"
+                f"**監視チャンネル：** {len(channels)}件\n"
+                f"**メンションロール：** {role}\n"
+                f"**エラーログ送信先：** {error_channel}"
+            )
 
         card = discord.ui.Container()
         card.add_item(discord.ui.TextDisplay("# YouTubeNotice | Config"))
         card.add_item(discord.ui.Separator())
         card.add_item(discord.ui.TextDisplay(
-            f"{summary}\n\nボタンから各種設定を変更できます。設定変更にはサーバー管理権限が必要です。"
+            f"{summary}\n\n下のメニューから操作を選択してください。"
+            "入力が必要な操作は、次の画面で「IDを入力する」を押すと120秒間の入力待ちになります。"
             "\n通知カテゴリロールはメンバーの選択状況を示すロールです。チャンネル別の通知はDMで配信します。"
         ))
         card.add_item(discord.ui.Separator())
-        card.add_item(discord.ui.ActionRow(
-            PanelButton(self, "フォーラム設定", "forum", discord.ButtonStyle.primary),
-            PanelButton(self, "チャンネル追加", "add", discord.ButtonStyle.success),
-            PanelButton(self, "チャンネル削除", "remove", discord.ButtonStyle.danger),
-        ))
-        card.add_item(discord.ui.ActionRow(
-            PanelButton(self, "動画タグ設定", "tags", discord.ButtonStyle.secondary),
-            PanelButton(self, "メンション設定", "role", discord.ButtonStyle.secondary),
-            PanelButton(self, "設定確認", "status", discord.ButtonStyle.secondary),
-        ))
-        card.add_item(discord.ui.ActionRow(
-            PanelButton(self, "最新動画でテスト通知", "test", discord.ButtonStyle.primary),
-            PanelButton(self, "通知カテゴリロール", "notifyroles", discord.ButtonStyle.secondary),
-        ))
+        card.add_item(discord.ui.ActionRow(PanelActionSelect(cog)))
         card.add_item(discord.ui.TextDisplay("-# YouTubeNotice Config System · YN!youtubectrl"))
         self.add_item(card)
 
@@ -229,14 +313,14 @@ class YouTubeConfig(commands.Cog):
             await interaction.response.send_message("このチャンネルでは既に入力待ちです。", ephemeral=True)
             return
 
-        if action == "add" and not self.db.fetchone(
+        if action in {"add", "remove", "test"} and not self.db.fetchone(
             "SELECT 1 FROM guild_config WHERE guild_id=?", (guild.id,)
         ):
             await interaction.response.send_message("先に通知先フォーラムを設定してください。", ephemeral=True)
             return
 
         core = self.bot.get_cog("YouTubeNotification")
-        if action != "forum" and core is None:
+        if action in {"add", "remove", "test"} and core is None:
             await interaction.response.send_message("通知コアが起動していません。", ephemeral=True)
             return
 
@@ -244,41 +328,93 @@ class YouTubeConfig(commands.Cog):
         self._input_sessions.add(session_key)
         prompt = None
         try:
-            if action == "forum":
-                prompt_text = "通知先フォーラムのチャンネルIDを送信してください。\n入力待ち時間は120秒です。"
-            else:
-                prompt_text = "YouTubeチャンネルIDを送信してください。\n例：UCから始まる24文字\n入力待ち時間は120秒です。"
-            prompt = await channel.send(prompt_text)
+            prompt_texts = {
+                "forum": "通知先フォーラムのチャンネルIDまたはメンションを送信してください。",
+                "add": "追加するYouTubeチャンネルのID・@ハンドル・チャンネルURLを送信してください。",
+                "remove": "削除するYouTubeチャンネルのID・@ハンドル・チャンネルURLを送信してください。",
+                "test": "テスト通知するYouTubeチャンネルのID・@ハンドル・チャンネルURLを送信してください。",
+                "errorlog": "エラーログ送信先のテキストチャンネルIDまたはメンションを送信してください。解除する場合は「解除」と入力してください。",
+            }
+            prompt = await channel.send(
+                prompt_texts[action] + "\n入力待ち時間は120秒です。入力内容は処理後に削除します。"
+            )
             check = lambda message: (
                 message.author.id == interaction.user.id
                 and message.channel.id == channel.id
                 and message.guild is not None
                 and message.guild.id == guild.id
             )
-            channel_id = None
+            resolved = None
+            error_message = "入力内容を確認できませんでした。"
             for attempt in range(3):
                 try:
                     message = await self.bot.wait_for("message", check=check, timeout=120)
                 except TimeoutError:
-                    await interaction.followup.send("入力がタイムアウトしました。もう一度パネルから操作してください。", ephemeral=True)
+                    await interaction.followup.send(
+                        "入力がタイムアウトしました。もう一度パネルから操作してください。",
+                        ephemeral=True,
+                    )
                     return
                 candidate = message.content.strip()
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    pass
+
                 if action == "forum":
                     discord_channel_id = snowflake(candidate)
                     target = guild.get_channel(discord_channel_id) if discord_channel_id else None
+                    if target is None and discord_channel_id:
+                        try:
+                            target = await guild.fetch_channel(discord_channel_id)
+                        except discord.HTTPException:
+                            target = None
                     if isinstance(target, discord.ForumChannel):
-                        channel_id = str(target.id)
+                        resolved = str(target.id)
                         break
                     error_message = "フォーラムチャンネルのIDまたはメンションを送信してください。"
+                elif action == "errorlog":
+                    if candidate.lower() in {"解除", "off", "none", "clear"}:
+                        self.db.execute(
+                            "UPDATE guild_config SET error_log_channel_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE guild_id=?",
+                            (guild.id,),
+                        )
+                        await interaction.followup.send("エラーログ送信先を解除しました。", ephemeral=True)
+                        return
+                    text_channel_id = snowflake(candidate)
+                    target = guild.get_channel(text_channel_id) if text_channel_id else None
+                    if target is None and text_channel_id:
+                        try:
+                            target = await guild.fetch_channel(text_channel_id)
+                        except discord.HTTPException:
+                            target = None
+                    if isinstance(target, discord.TextChannel):
+                        self.db.execute(
+                            "UPDATE guild_config SET error_log_channel_id=?, updated_at=CURRENT_TIMESTAMP WHERE guild_id=?",
+                            (target.id, guild.id),
+                        )
+                        await interaction.followup.send(
+                            f"エラーログ送信先を {target.mention} に設定しました。",
+                            ephemeral=True,
+                        )
+                        return
+                    error_message = "このサーバーのテキストチャンネルIDまたはメンションを送信してください。"
                 else:
-                    if CHANNEL_RE.fullmatch(candidate):
-                        channel_id = candidate
+                    resolved = await core.resolve_channel_id(candidate)
+                    if resolved:
                         break
-                    error_message = "YouTubeチャンネルIDはUCから始まる24文字で指定してください。"
+                    error_message = (
+                        "チャンネルを特定できませんでした。UCから始まるID、@ハンドル、"
+                        "またはYouTubeチャンネルURLを確認してください。"
+                    )
                 if attempt < 2:
                     await interaction.followup.send(error_message, ephemeral=True)
-            if channel_id is None:
-                await interaction.followup.send("形式が確認できなかったため、操作を中止しました。", ephemeral=True)
+
+            if resolved is None:
+                await interaction.followup.send(
+                    "入力内容を確認できなかったため、操作を中止しました。",
+                    ephemeral=True,
+                )
                 return
 
             if action == "forum":
@@ -286,27 +422,30 @@ class YouTubeConfig(commands.Cog):
                     """INSERT INTO guild_config(guild_id, forum_id) VALUES(?,?)
                        ON CONFLICT(guild_id) DO UPDATE SET forum_id=excluded.forum_id,
                        updated_at=CURRENT_TIMESTAMP""",
-                    (guild.id, int(channel_id)),
+                    (guild.id, int(resolved)),
                 )
-                ok, result = True, f"通知先フォーラムを <#{channel_id}> に設定しました。"
+                ok, result = True, f"通知先フォーラムを <#{resolved}> に設定しました。"
             elif action == "add":
-                ok, result = await core.add_channel(guild.id, channel_id)
+                ok, result = await core.add_channel(guild.id, resolved)
             elif action == "remove":
                 tracked = self.db.fetchone(
                     "SELECT 1 FROM tracked_channels WHERE guild_id=? AND channel_id=?",
-                    (guild.id, channel_id),
+                    (guild.id, resolved),
                 )
                 if not tracked:
                     ok, result = False, "このサーバーでは監視されていないチャンネルです。"
                 else:
-                    await core.remove_channel(guild.id, channel_id)
+                    await core.remove_channel(guild.id, resolved)
                     ok, result = True, "監視対象から削除しました。"
             else:
-                ok, result = await core.test_latest_video(guild.id, channel_id)
+                ok, result = await core.test_latest_video(guild.id, resolved)
             await interaction.followup.send(("✅ " if ok else "❌ ") + result, ephemeral=True)
         except Exception:
-            logging.getLogger("youtubenotice.config").exception("Channel ID input flow failed.")
-            await interaction.followup.send("処理中にエラーが発生しました。Botログを確認してください。", ephemeral=True)
+            logging.getLogger("youtubenotice.config").exception("Input mode failed.")
+            await interaction.followup.send(
+                "処理中にエラーが発生しました。Botログを確認してください。",
+                ephemeral=True,
+            )
         finally:
             self._input_sessions.discard(session_key)
             if prompt:
@@ -324,7 +463,8 @@ class YouTubeConfig(commands.Cog):
     async def show_status(self, interaction: discord.Interaction):
         cfg = self.db.fetchone(
             """SELECT forum_id, short_tag_id, horizontal_tag_id, live_tag_id,
-                      premiere_tag_id, mention_role_id
+                      premiere_tag_id, mention_role_id, error_log_channel_id,
+                      member_panel_channel_id, member_panel_message_id
                FROM guild_config WHERE guild_id=?""",
             (interaction.guild.id,),
         )
@@ -334,7 +474,22 @@ class YouTubeConfig(commands.Cog):
         )
         forum = f"<#{cfg['forum_id']}>" if cfg else "未設定"
         role = f"<@&{cfg['mention_role_id']}>" if cfg and cfg["mention_role_id"] else "未設定"
-        lines = [f"**通知先：** {forum}", f"**監視チャンネル：** {len(rows)}件", f"**メンションロール：** {role}"]
+        error_channel = (
+            f"<#{cfg['error_log_channel_id']}>"
+            if cfg and cfg["error_log_channel_id"] else "未設定"
+        )
+        panel = (
+            f"<#{cfg['member_panel_channel_id']}>"
+            if cfg and cfg["member_panel_channel_id"] and cfg["member_panel_message_id"]
+            else "未設置"
+        )
+        lines = [
+            f"**通知先：** {forum}",
+            f"**監視チャンネル：** {len(rows)}件",
+            f"**メンションロール：** {role}",
+            f"**エラーログ送信先：** {error_channel}",
+            f"**メンバー向け通知パネル：** {panel}",
+        ]
         if cfg:
             role_rows = self.db.fetchone(
                 """SELECT dm_notify_role_id, live_notify_role_id, video_notify_role_id,
@@ -353,7 +508,10 @@ class YouTubeConfig(commands.Cog):
                     )
                 )
             )
-        lines.extend(f"• {r['channel_title'] or r['channel_id']} ({r['channel_id']})" for r in rows)
+        lines.extend(
+            f"• {r['channel_title'] or r['channel_id']} ({r['channel_id']})"
+            for r in rows
+        )
         if cfg:
             lines.append(
                 f"**タグID：** Shorts {cfg['short_tag_id'] or '未設定'} / "
