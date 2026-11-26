@@ -72,7 +72,11 @@ class ConfigInputButton(discord.ui.Button):
             await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
             return
         await interaction.response.defer()
-        await self.cog.run_config_input(interaction, self.field)
+        try:
+            await self.cog.run_config_input(interaction, self.field)
+        except Exception:
+            log.exception("Config input interaction failed for field %s.", self.field)
+            await interaction.followup.send("❌ 設定処理中にエラーが発生しました。Botログを確認してください。")
 
 
 class ConfigOperationSelect(discord.ui.Select):
@@ -93,8 +97,13 @@ class ConfigOperationSelect(discord.ui.Select):
             return
         action = self.values[0]
         await interaction.response.defer()
-        if action in {"add", "remove", "test"}:
-            await self.cog.run_channel_operation(interaction, action)
+        try:
+            if action in {"add", "remove", "test"}:
+                await self.cog.run_channel_operation(interaction, action)
+                return
+        except Exception:
+            log.exception("Config operation failed: %s", action)
+            await interaction.followup.send("❌ 操作中にエラーが発生しました。Botログを確認してください。")
             return
         member_cog = self.cog.bot.get_cog("YouTubeMemberPreferences")
         if member_cog is None:
