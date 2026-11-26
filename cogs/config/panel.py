@@ -79,6 +79,57 @@ class ConfigInputButton(discord.ui.Button):
             await interaction.followup.send("❌ 設定処理中にエラーが発生しました。Botログを確認してください。")
 
 
+class MemberPanelTargetSelect(discord.ui.ChannelSelect):
+    def __init__(self, cog, guild_id: int, selected_channel_id: int | None = None):
+        self.cog = cog
+        self.guild_id = guild_id
+        super().__init__(
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            placeholder="通知設定パネルの送信先チャンネルを選択",
+            min_values=1, max_values=1, custom_id="yn:config:memberpanel:target",
+        )
+        if selected_channel_id:
+            self.default_values = [discord.SelectDefaultValue(
+                id=selected_channel_id, type=discord.SelectDefaultValueType.channel
+            )]
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
+            return
+        target = self.values[0]
+        self.cog._member_panel_targets[self.guild_id] = target.id
+        await interaction.response.edit_message(
+            view=YouTubeConfigPanel(self.cog, self.guild_id, selected_member_panel_channel_id=target.id)
+        )
+
+
+class PublishMemberPanelButton(discord.ui.Button):
+    def __init__(self, cog):
+        super().__init__(label="選択したチャンネルに送信・更新", style=discord.ButtonStyle.success,
+                         custom_id="yn:config:memberpanel:publish")
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
+            return
+        await interaction.response.defer()
+        channel_id = self.cog._member_panel_targets.get(interaction.guild.id)
+        target = interaction.guild.get_channel(channel_id) if channel_id else None
+        if not isinstance(target, (discord.TextChannel, discord.NewsChannel)):
+            await interaction.followup.send("先に送信先チャンネルを選択してください。")
+            return
+        member_cog = self.cog.bot.get_cog("YouTubeMemberPreferences")
+        if member_cog is None:
+            await interaction.followup.send("メンバー通知機能が読み込まれていません。")
+            return
+        ok, result = await member_cog.publish_panel(interaction.guild, target)
+        if ok:
+            await self.cog.refresh_panel(interaction)
+        await interaction.followup.send(("✅ " if ok else "❌ ") + result)
+
+
 class ConfigOperationSelect(discord.ui.Select):
     def __init__(self, cog):
         self.cog = cog
@@ -86,7 +137,6 @@ class ConfigOperationSelect(discord.ui.Select):
             discord.SelectOption(label="YouTubeチャンネルを追加", value="add", emoji="➕"),
             discord.SelectOption(label="YouTubeチャンネルを削除", value="remove", emoji="➖"),
             discord.SelectOption(label="最新動画でテスト通知", value="test", emoji="🧪"),
-            discord.SelectOption(label="メンバー向け通知パネルを送信・更新", value="memberpanel", emoji="📨"),
         ]
         super().__init__(placeholder="その他の操作を選択してください", min_values=1, max_values=1,
                          options=options, custom_id="yn:config:operation")
@@ -105,16 +155,10 @@ class ConfigOperationSelect(discord.ui.Select):
             log.exception("Config operation failed: %s", action)
             await interaction.followup.send("❌ 操作中にエラーが発生しました。Botログを確認してください。")
             return
-        member_cog = self.cog.bot.get_cog("YouTubeMemberPreferences")
-        if member_cog is None:
-            await interaction.followup.send("メンバー通知機能が読み込まれていません。")
-            return
-        ok, result = await member_cog.publish_panel(interaction.guild, interaction.channel)
-        await interaction.followup.send(("✅ " if ok else "❌ ") + result)
 
 
 class YouTubeConfigPanel(discord.ui.LayoutView):
-    def __init__(self, cog, guild_id: int):
+    def __init__(self, cog, guild_id: int, selected_member_panel_channel_id: int | None = None):
         super().__init__(timeout=None)
         self.cog = cog
         self.guild_id = guild_id
@@ -194,6 +238,11 @@ class YouTubeConfigPanel(discord.ui.LayoutView):
             + "\n".join(channel_lines)
             + "\n\n**メンバー向け通知パネル：** " + member_panel
         ))
+        selected_target = f"<#{selected_member_panel_channel_id}>" if selected_member_panel_channel_id else "未選択"
+        card.add_item(discord.ui.Separator())
+        card.add_item(discord.ui.TextDisplay("### メンバー向け通知パネルの送信先\n**選択中：** " + selected_target))
+        card.add_item(discord.ui.ActionRow(MemberPanelTargetSelect(cog, guild_id, selected_member_panel_channel_id)))
+        card.add_item(discord.ui.ActionRow(PublishMemberPanelButton(cog)))
         card.add_item(discord.ui.Separator())
         card.add_item(discord.ui.ActionRow(ConfigOperationSelect(cog)))
         card.add_item(discord.ui.TextDisplay(
@@ -206,6 +255,7 @@ class YouTubeConfig(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._input_sessions: set[tuple[int, int, int]] = set()
+        self._member_panel_targets: dict[int, int] = {}
 
     @property
     def db(self):
