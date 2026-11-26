@@ -259,7 +259,9 @@ class PublishMemberPanelButton(discord.ui.Button):
             return
         ok, result = await member_cog.publish_panel(interaction.guild, target)
         if ok:
-            await self.cog.refresh_panel(interaction)
+            await interaction.message.edit(
+                view=make_config_detail_view(self.cog, interaction.guild.id, "memberpanel")
+            )
         await interaction.followup.send(("✅ " if ok else "❌ ") + result)
 
 
@@ -351,6 +353,8 @@ class YouTubeConfig(commands.Cog):
             return
         try:
             self.bot.add_view(YouTubeConfigPanel(self, 0))
+            for category in ("forum", "roles", "tags", "errorlog", "memberpanel", "channels"):
+                self.bot.add_view(make_config_detail_view(self, 0, category))
             self._persistent_view_registered = True
             log.info("YouTubeConfig persistent view registered.")
         except Exception:
