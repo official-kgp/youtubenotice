@@ -430,37 +430,51 @@ class YouTubeMemberPreferences(commands.Cog):
             except discord.HTTPException:
                 log.exception("Could not send notification DM to user %s.", row["user_id"])
 
-    @commands.command(name="youtubepanel")
-    @commands.guild_only()
-    @commands.has_guild_permissions(manage_guild=True)
-    async def youtubepanel(self, ctx: commands.Context):
+    async def publish_panel(self, guild: discord.Guild, target_channel: discord.abc.Messageable | None = None) -> tuple[bool, str]:
+        """Create or update the public member preference panel."""
         existing = self.db.fetchone(
             """SELECT member_panel_channel_id, member_panel_message_id
                FROM guild_config WHERE guild_id=?""",
-            (ctx.guild.id,),
+            (guild.id,),
         )
         if not existing:
-            await ctx.reply("先に YN!youtubectrl で通知先フォーラムを設定してください。", mention_author=False)
-            return
+            return False, "先に YN!youtubectrl で通知先フォーラムを設定してください。"
+
         if existing["member_panel_channel_id"] and existing["member_panel_message_id"]:
-            channel = ctx.guild.get_channel(existing["member_panel_channel_id"])
+            channel = guild.get_channel(existing["member_panel_channel_id"])
             if channel:
                 try:
                     message = await channel.fetch_message(existing["member_panel_message_id"])
                     await message.edit(view=PublicNotificationPanel())
-                    await ctx.reply("通知設定パネルを更新しました。", mention_author=False)
-                    return
+                    return True, f"既存の通知設定パネルを更新しました（{channel.mention}）。"
                 except discord.NotFound:
                     pass
                 except discord.HTTPException:
                     log.exception("Could not update existing member panel.")
-        message = await ctx.send(view=PublicNotificationPanel())
+                    return False, "既存パネルの更新に失敗しました。Botの権限を確認してください。"
+
+        channel = target_channel
+        if channel is None or not hasattr(channel, "send"):
+            return False, "新しいパネルの送信先チャンネルを指定してください。"
+        try:
+            message = await channel.send(view=PublicNotificationPanel())
+        except discord.HTTPException:
+            log.exception("Could not publish member preference panel.")
+            return False, "通知設定パネルを送信できませんでした。送信先の権限を確認してください。"
+
         self.db.execute(
             """UPDATE guild_config SET member_panel_channel_id=?, member_panel_message_id=?,
                updated_at=CURRENT_TIMESTAMP WHERE guild_id=?""",
-            (message.channel.id, message.id, ctx.guild.id),
+            (message.channel.id, message.id, guild.id),
         )
-        await ctx.reply("通知設定パネルを設置しました。", mention_author=False)
+        return True, f"通知設定パネルを {message.channel.mention} に設置しました。"
+
+    @commands.command(name="youtubepanel")
+    @commands.guild_only()
+    @commands.has_guild_permissions(manage_guild=True)
+    async def youtubepanel(self, ctx: commands.Context):
+        ok, message = await self.publish_panel(ctx.guild, ctx.channel)
+        await ctx.reply(("✅ " if ok else "❌ ") + message, mention_author=False)
 
 
 async def setup(bot: commands.Bot):
