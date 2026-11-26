@@ -474,9 +474,9 @@ class YouTubeMemberPreferences(commands.Cog):
 
         try:
             message = await channel.send(view=PublicNotificationPanel())
-        except discord.HTTPException:
+        except discord.HTTPException as exc:
             log.exception("Could not publish member preference panel.")
-            return False, f"通知設定パネルを送信できませんでした（Discord API {getattr(__import__('sys').exc_info()[1], 'status', 'unknown')}）。Botの送信権限とチャンネル種別を確認してください。"
+            return False, f"通知設定パネルを送信できませんでした（Discord API {exc.status}）。Botの送信権限とチャンネル種別を確認してください。"
 
         self.db.execute(
             """UPDATE guild_config SET member_panel_channel_id=?, member_panel_message_id=?,
