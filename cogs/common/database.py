@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS guild_config (
     premiere_tag_id INTEGER,
     archive_tag_id INTEGER,
     mention_role_id INTEGER,
+    error_log_channel_id INTEGER,
     dm_notify_role_id INTEGER,
     live_notify_role_id INTEGER,
     video_notify_role_id INTEGER,
@@ -101,6 +102,13 @@ CREATE INDEX IF NOT EXISTS idx_tracked_channels_channel
     ON tracked_channels(channel_id);
 CREATE INDEX IF NOT EXISTS idx_videos_channel_status
     ON videos(channel_id, status);
+
+CREATE TABLE IF NOT EXISTS error_report_state (
+    guild_id INTEGER NOT NULL,
+    error_key TEXT NOT NULL,
+    last_sent_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, error_key)
+);
 """
 
 
@@ -123,6 +131,9 @@ class Database:
             self.connection.execute(
                 "ALTER TABLE videos ADD COLUMN notification_eligible INTEGER NOT NULL DEFAULT 1"
             )
+        for column in ("actual_start_time", "actual_end_time", "scheduled_start_time", "content_type"):
+            if column not in video_columns:
+                self.connection.execute(f"ALTER TABLE videos ADD COLUMN {column} TEXT")
         tracked_columns = {
             row["name"] for row in self.connection.execute("PRAGMA table_info(tracked_channels)").fetchall()
         }
@@ -133,7 +144,7 @@ class Database:
         }
         for column in (
             "short_tag_id", "horizontal_tag_id", "premiere_tag_id", "archive_tag_id",
-            "mention_role_id", "dm_notify_role_id", "live_notify_role_id",
+            "mention_role_id", "error_log_channel_id", "dm_notify_role_id", "live_notify_role_id",
             "video_notify_role_id", "all_notify_role_id",
             "member_panel_channel_id", "member_panel_message_id",
         ):
