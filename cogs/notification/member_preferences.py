@@ -46,22 +46,28 @@ class PublicPanelButton(discord.ui.Button):
             )
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        channels = cog.db.fetchall(
-            """SELECT channel_id, channel_title FROM tracked_channels
-               WHERE guild_id=? ORDER BY channel_title, channel_id""",
-            (interaction.guild.id,),
-        )
-        if not channels:
-            await interaction.edit_original_response(
-                content="現在、通知設定が可能なYouTubeチャンネルはありません。", view=None
-            )
-            return
-        view = ChannelSelectView(cog, interaction.guild.id, channels)
-        await interaction.edit_original_response(content=None, view=view)
         try:
-            view.message = await interaction.original_response()
-        except discord.HTTPException:
-            log.exception("Could not cache member preference interaction message.")
+            channels = cog.db.fetchall(
+                """SELECT channel_id, channel_title FROM tracked_channels
+                   WHERE guild_id=? ORDER BY channel_title, channel_id""",
+                (interaction.guild.id,),
+            )
+            if not channels:
+                await interaction.edit_original_response(
+                    content="現在、通知設定が可能なYouTubeチャンネルはありません。", view=None
+                )
+                return
+            view = ChannelSelectView(cog, interaction.guild.id, channels)
+            await interaction.edit_original_response(content=None, view=view)
+            try:
+                view.message = await interaction.original_response()
+            except discord.HTTPException:
+                log.exception("Could not cache member preference interaction message.")
+        except Exception:
+            log.exception("Could not open member notification preferences.")
+            await interaction.edit_original_response(
+                content="通知設定を開けませんでした。Botログを確認してください。", view=None
+            )
 
 
 class PublicNotificationPanel(discord.ui.LayoutView):
