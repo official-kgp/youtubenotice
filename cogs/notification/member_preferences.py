@@ -447,22 +447,31 @@ class YouTubeMemberPreferences(commands.Cog):
         if not existing:
             return False, "先に YN!youtubectrl で通知先フォーラムを設定してください。"
 
+        old_channel = None
+        old_message = None
         if existing["member_panel_channel_id"] and existing["member_panel_message_id"]:
-            channel = guild.get_channel(existing["member_panel_channel_id"])
-            if channel:
+            old_channel = guild.get_channel(existing["member_panel_channel_id"])
+            if old_channel:
                 try:
-                    message = await channel.fetch_message(existing["member_panel_message_id"])
-                    await message.edit(view=PublicNotificationPanel())
-                    return True, f"既存の通知設定パネルを更新しました（{channel.mention}）。"
+                    old_message = await old_channel.fetch_message(existing["member_panel_message_id"])
                 except discord.NotFound:
-                    pass
+                    old_message = None
                 except discord.HTTPException:
-                    log.exception("Could not update existing member panel.")
-                    return False, "既存パネルの更新に失敗しました。Botの権限を確認してください。"
+                    log.exception("Could not fetch existing member panel.")
+                    return False, "既存パネルを確認できませんでした。Botの権限を確認してください。"
 
-        channel = target_channel
+        channel = target_channel or old_channel
         if channel is None or not hasattr(channel, "send"):
-            return False, "新しいパネルの送信先チャンネルを指定してください。"
+            return False, "送信先チャンネルを選択してください。"
+
+        if old_message and old_channel and old_channel.id == channel.id:
+            try:
+                await old_message.edit(view=PublicNotificationPanel())
+                return True, f"既存の通知設定パネルを更新しました（{channel.mention}）。"
+            except discord.HTTPException:
+                log.exception("Could not update existing member panel.")
+                return False, "既存パネルの更新に失敗しました。Botの権限を確認してください。"
+
         try:
             message = await channel.send(view=PublicNotificationPanel())
         except discord.HTTPException:
@@ -474,6 +483,11 @@ class YouTubeMemberPreferences(commands.Cog):
                updated_at=CURRENT_TIMESTAMP WHERE guild_id=?""",
             (message.channel.id, message.id, guild.id),
         )
+        if old_message and old_channel and old_channel.id != channel.id:
+            try:
+                await old_message.delete()
+            except discord.HTTPException:
+                log.warning("Could not delete moved member panel message %s", old_message.id)
         return True, f"通知設定パネルを {message.channel.mention} に設置しました。"
 
     @commands.command(name="youtubepanel")
