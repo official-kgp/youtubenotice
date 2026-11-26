@@ -45,22 +45,23 @@ class PublicPanelButton(discord.ui.Button):
                 "このパネルはサーバー内で使用してください。", ephemeral=True
             )
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         channels = cog.db.fetchall(
             """SELECT channel_id, channel_title FROM tracked_channels
                WHERE guild_id=? ORDER BY channel_title, channel_id""",
             (interaction.guild.id,),
         )
         if not channels:
-            await interaction.response.send_message(
-                "現在、通知設定が可能なYouTubeチャンネルはありません。", ephemeral=True
+            await interaction.edit_original_response(
+                content="現在、通知設定が可能なYouTubeチャンネルはありません。", view=None
             )
             return
         view = ChannelSelectView(cog, interaction.guild.id, channels)
-        await interaction.response.send_message(view=view, ephemeral=True)
+        await interaction.edit_original_response(content=None, view=view)
         try:
             view.message = await interaction.original_response()
         except discord.HTTPException:
-            pass
+            log.exception("Could not cache member preference interaction message.")
 
 
 class PublicNotificationPanel(discord.ui.LayoutView):
