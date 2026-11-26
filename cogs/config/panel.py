@@ -334,7 +334,7 @@ class YouTubeConfig(commands.Cog):
                 "errorlog": "エラーログ送信先のテキストチャンネルIDまたはメンションを送信してください。解除する場合は「解除」と入力してください。",
             }
             prompt = await channel.send(
-                prompt_texts[action] + "\n入力待ち時間は120秒です。入力内容は処理後に削除します。"
+                prompt_texts[action] + "\n入力待ち時間は120秒です。入力内容は処理後に削除を試みます。"
             )
             check = lambda message: (
                 message.author.id == interaction.user.id
@@ -356,8 +356,16 @@ class YouTubeConfig(commands.Cog):
                 candidate = message.content.strip()
                 try:
                     await message.delete()
+                except discord.Forbidden:
+                    await interaction.followup.send(
+                        "入力メッセージを削除できませんでした。Botにメッセージ管理権限がないため、入力内容がチャンネルに残る可能性があります。",
+                        ephemeral=True,
+                    )
                 except discord.HTTPException:
-                    pass
+                    logging.getLogger("youtubenotice.config").warning(
+                        "Could not delete input message %s in channel %s",
+                        message.id, channel.id,
+                    )
 
                 if action == "forum":
                     discord_channel_id = snowflake(candidate)
