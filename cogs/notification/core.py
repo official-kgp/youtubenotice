@@ -793,19 +793,18 @@ class YouTubeNotification(commands.Cog):
                             delivery_item.get("actual_start_time")
                             or delivery_item.get("published_at")
                         )
-                        if delivery_item.get("actual_start_time"):
-                            await self.report_operational_error(
-                                channel_id,
-                                "missed_live_transition",
-                                (
-                                    "配信予定から公開済みへの遷移を検知しましたが、LIVE状態を観測できませんでした。"
-                                    f" video_id={video_id}\n"
-                                    f"actualStartTime={delivery_item.get('actual_start_time')}\n"
-                                    f"actualEndTime={delivery_item.get('actual_end_time')}\n"
-                                    "YouTube Data APIでは終了済みPremiereとLIVEアーカイブを確実に区別できないため、"
-                                    "誤分類を避けて通常動画として更新しています。"
-                                ),
-                            )
+                        await self.report_operational_error(
+                            channel_id,
+                            "missed_live_transition",
+                            (
+                                "配信予定から公開済みへの遷移を検知しましたが、LIVE状態を観測できませんでした。"
+                                f" video_id={video_id}\n"
+                                f"actualStartTime={delivery_item.get('actual_start_time') or '未取得'}\n"
+                                f"actualEndTime={delivery_item.get('actual_end_time') or '未取得'}\n"
+                                "これはLIVE開始の取りこぼし、またはPremiere終了の可能性があります。"
+                                "YouTube Data APIでは両者を確実に区別できないため、誤分類を避けて通常動画として更新しています。"
+                            ),
+                        )
 
                 event_kind = None
                 if delivery_item["status"] == "upcoming" and not delivery:
