@@ -60,7 +60,7 @@ class ConfigInputButton(discord.ui.Button):
     def __init__(self, cog, guild_id: int, field: str):
         current = cog.get_config_value(guild_id, field)
         super().__init__(
-            label="変更する" if current else "設定する",
+            label=ID_FIELDS[field] + (": 変更する" if current else ": 設定する"),
             style=discord.ButtonStyle.primary,
             custom_id=f"yn:config:input:{field}",
         )
