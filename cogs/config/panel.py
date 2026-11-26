@@ -157,9 +157,7 @@ class InputActionBackButton(discord.ui.Button):
         super().__init__(label="閉じる", style=discord.ButtonStyle.secondary)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(
-            view=discord.ui.LayoutView(timeout=60)
-        )
+        await interaction.response.edit_message(view=None)
 
 
 class InputActionView(discord.ui.LayoutView):
@@ -313,7 +311,7 @@ class YouTubeConfig(commands.Cog):
             await interaction.response.send_message("このチャンネルでは既に入力待ちです。", ephemeral=True)
             return
 
-        if action in {"add", "remove", "test"} and not self.db.fetchone(
+        if action in {"add", "remove", "test", "errorlog"} and not self.db.fetchone(
             "SELECT 1 FROM guild_config WHERE guild_id=?", (guild.id,)
         ):
             await interaction.response.send_message("先に通知先フォーラムを設定してください。", ephemeral=True)
