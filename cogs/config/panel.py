@@ -56,27 +56,152 @@ def display_id(value: int | None, kind: str) -> str:
     return str(value)
 
 
-class ConfigInputButton(discord.ui.Button):
+class ConfigFieldButton(discord.ui.Button):
     def __init__(self, cog, guild_id: int, field: str):
         current = cog.get_config_value(guild_id, field)
-        super().__init__(
-            label=ID_FIELDS[field] + (": 変更する" if current else ": 設定する"),
-            style=discord.ButtonStyle.primary,
-            custom_id=f"yn:config:input:{field}",
-        )
-        self.cog = cog
-        self.field = field
+        super().__init__(label="変更する" if current else "設定する",
+                         style=discord.ButtonStyle.primary,
+                         custom_id=f"yn:config:field:{field}")
+        self.cog, self.guild_id, self.field = cog, guild_id, field
 
     async def callback(self, interaction: discord.Interaction):
-        if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
+        if not interaction.guild or interaction.guild.id != self.guild_id or not interaction.user.guild_permissions.manage_guild:
             await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
             return
         await interaction.response.defer()
         try:
-            await self.cog.run_config_input(interaction, self.field)
+            await self.cog.run_config_input(interaction, self.field, refresh_detail=True)
         except Exception:
             log.exception("Config input interaction failed for field %s.", self.field)
             await interaction.followup.send("❌ 設定処理中にエラーが発生しました。Botログを確認してください。")
+
+
+class ConfigBackButton(discord.ui.Button):
+    def __init__(self, cog, guild_id: int):
+        super().__init__(label="戻る", style=discord.ButtonStyle.secondary, custom_id="yn:config:back")
+        self.cog, self.guild_id = cog, guild_id
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(view=YouTubeConfigPanel(self.cog, self.guild_id))
+
+
+class ConfigCategorySelect(discord.ui.Select):
+    def __init__(self, cog, guild_id: int):
+        self.cog, self.guild_id = cog, guild_id
+        options = [
+            discord.SelectOption(label="通知先フォーラム", value="forum", emoji="📌"),
+            discord.SelectOption(label="通知ロール", value="roles", emoji="🔔"),
+            discord.SelectOption(label="フォーラムタグ", value="tags", emoji="🏷️"),
+            discord.SelectOption(label="エラーログ送信先", value="errorlog", emoji="🧾"),
+            discord.SelectOption(label="メンバー向け通知パネル", value="memberpanel", emoji="📨"),
+            discord.SelectOption(label="監視チャンネル", value="channels", emoji="📺"),
+        ]
+        super().__init__(placeholder="変更する設定カテゴリーを選択してください",
+                         options=options, min_values=1, max_values=1,
+                         custom_id="yn:config:category")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild or interaction.guild.id != self.guild_id or not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            view=make_config_detail_view(self.cog, self.guild_id, self.values[0])
+        )
+
+
+def make_config_detail_view(cog, guild_id: int, category: str):
+    cfg = cog.db.fetchone(
+        """SELECT forum_id, mention_role_id, error_log_channel_id,
+                  dm_notify_role_id, live_notify_role_id, video_notify_role_id,
+                  all_notify_role_id, short_tag_id, horizontal_tag_id,
+                  live_tag_id, premiere_tag_id, member_panel_channel_id,
+                  member_panel_message_id
+           FROM guild_config WHERE guild_id=?""", (guild_id,)
+    )
+    channels = cog.db.fetchall(
+        "SELECT channel_id, channel_title FROM tracked_channels WHERE guild_id=? ORDER BY channel_title, channel_id",
+        (guild_id,)
+    )
+
+    def current(field, kind):
+        return display_id(cfg[field] if cfg else None, kind)
+
+    titles = {
+        "forum": "通知先フォーラム│Config",
+        "roles": "通知ロール│Config",
+        "tags": "フォーラムタグ│Config",
+        "errorlog": "エラーログ送信先│Config",
+        "memberpanel": "メンバー向け通知パネル│Config",
+        "channels": "監視チャンネル│Config",
+    }
+    view = discord.ui.LayoutView(timeout=None)
+    card = discord.ui.Container()
+    card.add_item(discord.ui.TextDisplay("## " + titles[category]))
+    card.add_item(discord.ui.Separator())
+
+    if category == "forum":
+        card.add_item(discord.ui.TextDisplay(
+            "通知を投稿するフォーラムチャンネルを設定します。\n\n"
+            + "**通知先フォーラム：** " + current("forum_id", "channel")
+        ))
+        card.add_item(discord.ui.ActionRow(ConfigFieldButton(cog, guild_id, "forum_id")))
+    elif category == "roles":
+        card.add_item(discord.ui.TextDisplay("通知カテゴリーごとのロールを設定します。"))
+        for field, label in [
+            ("mention_role_id", "メンション"),
+            ("dm_notify_role_id", "DM"),
+            ("live_notify_role_id", "LIVE・プレミア公開"),
+            ("video_notify_role_id", "横動画・Shorts"),
+            ("all_notify_role_id", "全通知"),
+        ]:
+            card.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+            card.add_item(discord.ui.TextDisplay("**" + label + "ロール：** " + current(field, "role")))
+            card.add_item(discord.ui.ActionRow(ConfigFieldButton(cog, guild_id, field)))
+    elif category == "tags":
+        card.add_item(discord.ui.TextDisplay(
+            "フォーラムタグのIDを変更できます。\n各ジャンルの設定又は変更ボタンを押して編集してください。"
+        ))
+        for field, label in [
+            ("short_tag_id", "Shortsタグ"),
+            ("horizontal_tag_id", "横動画タグ"),
+            ("live_tag_id", "LIVEタグ"),
+            ("premiere_tag_id", "プレミア公開タグ"),
+        ]:
+            card.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+            card.add_item(discord.ui.TextDisplay("**" + label + "：** " + current(field, "tag")))
+            card.add_item(discord.ui.ActionRow(ConfigFieldButton(cog, guild_id, field)))
+    elif category == "errorlog":
+        card.add_item(discord.ui.TextDisplay(
+            "エラー通知を送信するテキストチャンネルを設定します。\n\n"
+            + "**エラーログ送信先：** " + current("error_log_channel_id", "channel")
+        ))
+        card.add_item(discord.ui.ActionRow(ConfigFieldButton(cog, guild_id, "error_log_channel_id")))
+    elif category == "memberpanel":
+        stored = cfg["member_panel_channel_id"] if cfg else None
+        selected = cog._member_panel_targets.get(guild_id, stored)
+        selected_text = ("<#" + str(selected) + ">") if selected else "未選択"
+        stored_text = ("<#" + str(stored) + ">") if stored else "未設置"
+        card.add_item(discord.ui.TextDisplay(
+            "通知設定パネルを送信するチャンネルを選択してください。\n\n"
+            + "**現在の設置先：** " + stored_text + "\n**送信先選択：** " + selected_text
+        ))
+        card.add_item(discord.ui.ActionRow(MemberPanelTargetSelect(cog, guild_id, selected)))
+        card.add_item(discord.ui.ActionRow(PublishMemberPanelButton(cog)))
+    elif category == "channels":
+        lines = [
+            "• " + (row["channel_title"] or row["channel_id"]) + " (" + row["channel_id"] + ")"
+            for row in channels[:20]
+        ] or ["未登録"]
+        if len(channels) > 20:
+            lines.append("ほか " + str(len(channels) - 20) + " チャンネル")
+        card.add_item(discord.ui.TextDisplay(
+            "**監視チャンネル：** " + str(len(channels)) + "件\n" + "\n".join(lines)
+        ))
+        card.add_item(discord.ui.ActionRow(ConfigOperationSelect(cog)))
+    card.add_item(discord.ui.Separator())
+    card.add_item(discord.ui.ActionRow(ConfigBackButton(cog, guild_id)))
+    view.add_item(card)
+    return view
 
 
 class MemberPanelTargetSelect(discord.ui.ChannelSelect):
