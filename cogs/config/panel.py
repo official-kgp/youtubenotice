@@ -10,7 +10,6 @@ from discord.ext import commands
 log = logging.getLogger("youtubenotice.config")
 CLEAR_VALUES = {"解除", "off", "none", "clear", "未設定"}
 ROLE_FIELDS = {
-    "mention_role_id": "通知メンションロール",
     "dm_notify_role_id": "DM通知ロール",
     "live_notify_role_id": "LIVE・プレミア公開ロール",
     "video_notify_role_id": "横動画・Shortsロール",
@@ -24,7 +23,6 @@ TAG_FIELDS = {
 }
 ID_FIELDS = {
     "forum_id": "通知先フォーラム",
-    "mention_role_id": "通知メンションロール",
     "dm_notify_role_id": "DM通知ロール",
     "live_notify_role_id": "LIVE・プレミア公開ロール",
     "video_notify_role_id": "横動画・Shortsロール",
@@ -111,7 +109,7 @@ class ConfigCategorySelect(discord.ui.Select):
 
 def make_config_detail_view(cog, guild_id: int, category: str):
     cfg = cog.db.fetchone(
-        """SELECT forum_id, mention_role_id, error_log_channel_id,
+        """SELECT forum_id, error_log_channel_id,
                   dm_notify_role_id, live_notify_role_id, video_notify_role_id,
                   all_notify_role_id, short_tag_id, horizontal_tag_id,
                   live_tag_id, premiere_tag_id, member_panel_channel_id,
@@ -148,7 +146,6 @@ def make_config_detail_view(cog, guild_id: int, category: str):
     elif category == "roles":
         card.add_item(discord.ui.TextDisplay("通知カテゴリーごとのロールを設定します。"))
         for field, label in [
-            ("mention_role_id", "メンション"),
             ("dm_notify_role_id", "DM"),
             ("live_notify_role_id", "LIVE・プレミア公開"),
             ("video_notify_role_id", "横動画・Shorts"),
@@ -297,7 +294,7 @@ class YouTubeConfigPanel(discord.ui.LayoutView):
         super().__init__(timeout=None)
         self.cog, self.guild_id = cog, guild_id
         cfg = cog.db.fetchone(
-            """SELECT forum_id, mention_role_id FROM guild_config WHERE guild_id=?""",
+            """SELECT forum_id, all_notify_role_id FROM guild_config WHERE guild_id=?""",
             (guild_id,),
         )
         channels = cog.db.fetchone(
@@ -305,14 +302,14 @@ class YouTubeConfigPanel(discord.ui.LayoutView):
             (guild_id,),
         )
         forum_id = cfg["forum_id"] if cfg else None
-        mention_role_id = cfg["mention_role_id"] if cfg else None
+        all_notify_role_id = cfg["all_notify_role_id"] if cfg else None
         card = discord.ui.Container()
         card.add_item(discord.ui.TextDisplay("# YouTubeNotice | Config"))
         card.add_item(discord.ui.Separator())
         card.add_item(discord.ui.TextDisplay(
             "**通知先フォーラム：** " + (f"<#{forum_id}>" if forum_id else "未設定")
             + "\n**監視チャンネル：** " + str(channels["total"] if channels else 0) + "件"
-            + "\n**メンションロール：** " + (f"<@&{mention_role_id}>" if mention_role_id else "未設定")
+            + "\n**全通知ロール：** " + (f"<@&{all_notify_role_id}>" if all_notify_role_id else "未設定")
         ))
         card.add_item(discord.ui.TextDisplay(
             "ボタンから各種設定を変更できます。設定変更にはサーバー管理権限が必要です。"
