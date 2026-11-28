@@ -45,7 +45,6 @@ class PublicPanelButton(discord.ui.Button):
                 "このパネルはサーバー内で使用してください。", ephemeral=True
             )
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             channels = cog.db.fetchall(
                 """SELECT channel_id, channel_title FROM tracked_channels
@@ -53,21 +52,29 @@ class PublicPanelButton(discord.ui.Button):
                 (interaction.guild.id,),
             )
             if not channels:
-                await interaction.edit_original_response(
-                    content="現在、通知設定が可能なYouTubeチャンネルはありません。", view=None
+                await interaction.response.send_message(
+                    "現在、通知設定が可能なYouTubeチャンネルはありません。",
+                    ephemeral=True,
                 )
                 return
-            view = ChannelSelectView(cog, interaction.guild.id, channels)
-            await interaction.edit_original_response(content=None, view=view)
+
+            view = ChannelSelectView(
+                cog, interaction.guild.id, channels, user_id=interaction.user.id
+            )
+            # Send the ephemeral view as the initial response so the active view
+            # instance is registered directly for the interaction message.
+            await interaction.response.send_message(view=view, ephemeral=True)
             try:
                 view.message = await interaction.original_response()
             except discord.HTTPException:
                 log.exception("Could not cache member preference interaction message.")
         except Exception:
             log.exception("Could not open member notification preferences.")
-            await interaction.edit_original_response(
-                content="通知設定を開けませんでした。Botログを確認してください。", view=None
-            )
+            message = "通知設定を開けませんでした。Botログを確認してください。"
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
 
 
 class PublicNotificationPanel(discord.ui.LayoutView):
@@ -126,7 +133,7 @@ class ChannelSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         view = CategorySelectView(
             self.parent.cog, self.parent.guild_id,
-            interaction.user.id, self.values[0],
+            self.parent.user_id, self.values[0],
         )
         view.message = interaction.message
         await interaction.response.edit_message(view=view)
@@ -141,17 +148,53 @@ class ChannelPageButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         view = ChannelSelectView(
             self.parent.cog, self.parent.guild_id,
-            self.parent.channels, self.offset,
+            self.parent.channels, self.offset, self.parent.user_id,
         )
         view.message = interaction.message
         await interaction.response.edit_message(view=view)
 
 
-class ChannelSelectView(discord.ui.LayoutView):
-    def __init__(self, cog, guild_id: int, channels: list[Any], offset: int = 0):
-        super().__init__(timeout=300)
-        self.cog = cog
+class MemberPreferenceView(discord.ui.LayoutView):
+    def __init__(self, guild_id: int, user_id: int, timeout: float = 300):
+        super().__init__(timeout=timeout)
         self.guild_id = guild_id
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or interaction.guild.id != self.guild_id:
+            await interaction.response.send_message(
+                "この設定画面は元のサーバー内で使用してください。", ephemeral=True
+            )
+            return False
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "この通知設定画面を操作できるのは、開いた本人だけです。",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_error(
+        self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item
+    ) -> None:
+        log.error(
+            "Member notification panel interaction failed.",
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        message = "通知設定の処理中にエラーが発生しました。パネルを開き直してください。"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
+
+class ChannelSelectView(MemberPreferenceView):
+    def __init__(
+        self, cog, guild_id: int, channels: list[Any], offset: int = 0,
+        user_id: int | None = None,
+    ):
+        super().__init__(guild_id=guild_id, user_id=user_id or 0, timeout=300)
+        self.cog = cog
         self.channels = channels
         self.offset = offset
         self.message = None
@@ -203,12 +246,10 @@ class PreferenceCategorySelect(discord.ui.Select):
         await interaction.response.edit_message(view=view)
 
 
-class CategorySelectView(discord.ui.LayoutView):
+class CategorySelectView(MemberPreferenceView):
     def __init__(self, cog, guild_id: int, user_id: int, channel_id: str):
-        super().__init__(timeout=300)
+        super().__init__(guild_id=guild_id, user_id=user_id, timeout=300)
         self.cog = cog
-        self.guild_id = guild_id
-        self.user_id = user_id
         self.channel_id = channel_id
         self.message = None
         card = discord.ui.Container()
@@ -226,7 +267,9 @@ class CategorySelectView(discord.ui.LayoutView):
                WHERE guild_id=? ORDER BY channel_title, channel_id""",
             (self.guild_id,),
         )
-        view = ChannelSelectView(self.cog, self.guild_id, rows)
+        view = ChannelSelectView(
+            self.cog, self.guild_id, rows, user_id=self.user_id
+        )
         view.message = interaction.message
         await interaction.response.edit_message(view=view)
 
@@ -250,15 +293,13 @@ class PreferenceToggleButton(discord.ui.Button):
         await self.parent.toggle(interaction)
 
 
-class PreferenceEditorView(discord.ui.LayoutView):
+class PreferenceEditorView(MemberPreferenceView):
     def __init__(
         self, cog, guild_id: int, user_id: int, channel_id: str,
         category: str, notice: str | None = None,
     ):
-        super().__init__(timeout=300)
+        super().__init__(guild_id=guild_id, user_id=user_id, timeout=300)
         self.cog = cog
-        self.guild_id = guild_id
-        self.user_id = user_id
         self.channel_id = channel_id
         self.category = category
         self.message = None
@@ -325,7 +366,9 @@ class PreferenceEditorView(discord.ui.LayoutView):
                WHERE guild_id=? ORDER BY channel_title, channel_id""",
             (self.guild_id,),
         )
-        view = ChannelSelectView(self.cog, self.guild_id, rows)
+        view = ChannelSelectView(
+            self.cog, self.guild_id, rows, user_id=self.user_id
+        )
         view.message = interaction.message
         await interaction.response.edit_message(view=view)
 
