@@ -148,7 +148,7 @@ class ChannelPageButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         view = ChannelSelectView(
             self.parent.cog, self.parent.guild_id,
-            self.parent.channels, self.offset, self.parent.user_id,
+            self.parent.channels, self.offset, user_id=self.parent.user_id,
         )
         view.message = interaction.message
         await interaction.response.edit_message(view=view)
@@ -191,9 +191,9 @@ class MemberPreferenceView(discord.ui.LayoutView):
 class ChannelSelectView(MemberPreferenceView):
     def __init__(
         self, cog, guild_id: int, channels: list[Any], offset: int = 0,
-        user_id: int | None = None,
+        *, user_id: int,
     ):
-        super().__init__(guild_id=guild_id, user_id=user_id or 0, timeout=300)
+        super().__init__(guild_id=guild_id, user_id=user_id, timeout=300)
         self.cog = cog
         self.channels = channels
         self.offset = offset
