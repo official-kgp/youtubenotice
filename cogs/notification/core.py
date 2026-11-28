@@ -70,10 +70,15 @@ VIDEO_CATEGORIES = {
 }
 
 
-def resolve_notification_role_ids(item: dict[str, Any], config: Any) -> list[int]:
+def resolve_notification_role_ids(
+    item: dict[str, Any],
+    config: Any,
+    *,
+    live_started: bool = False,
+) -> list[int]:
     """Return the all-notification role and the role matching this event."""
     role_ids = [config["all_notify_role_id"]]
-    if item.get("status") == "live":
+    if item.get("status") == "live" and live_started:
         role_ids.append(config["live_notify_role_id"])
     elif (
         item.get("status") == "video"
@@ -1000,7 +1005,9 @@ class YouTubeNotification(commands.Cog):
         if thread is None:
             return False
 
-        role_ids = resolve_notification_role_ids(item, config)
+        role_ids = resolve_notification_role_ids(
+            item, config, live_started=announce_start
+        )
         forum = guild.get_channel(config["forum_id"])
         try:
             new_name = discord.utils.escape_markdown(item.get("title") or "YouTube")[:90].strip()
