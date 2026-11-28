@@ -22,7 +22,7 @@ YouTubeNoticeは、YouTube WebSubによるプッシュ通知とYouTube Data API 
 - 複数Guild・複数チャンネルへの通知
 - 赤色Embed・動画サムネイル・YouTubeリンクボタンを備えた通知UI
 - Shorts／横動画／ライブ／プレミア・配信予定の種別タグ設定
-- Guildごとの通知メンションロール設定
+- Guildごとの全通知ロール・通知カテゴリ別ロール設定
 - `YN!youtubectrl` による統合Prefix設定パネル（操作セレクト＋ボタン式入力モード）
 - YouTubeチャンネルID／@ハンドル／チャンネルURLによる監視登録・削除・テスト
 - WebSubイベントのFIFOキュー処理と定期照合の個別エラー分離
