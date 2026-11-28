@@ -10,7 +10,6 @@ from discord.ext import commands
 log = logging.getLogger("youtubenotice.config")
 CLEAR_VALUES = {"解除", "off", "none", "clear", "未設定"}
 ROLE_FIELDS = {
-    "mention_role_id": "通知メンションロール",
     "dm_notify_role_id": "DM通知ロール",
     "live_notify_role_id": "LIVE・プレミア公開ロール",
     "video_notify_role_id": "横動画・Shortsロール",
@@ -24,7 +23,6 @@ TAG_FIELDS = {
 }
 ID_FIELDS = {
     "forum_id": "通知先フォーラム",
-    "mention_role_id": "通知メンションロール",
     "dm_notify_role_id": "DM通知ロール",
     "live_notify_role_id": "LIVE・プレミア公開ロール",
     "video_notify_role_id": "横動画・Shortsロール",
@@ -56,6 +54,16 @@ def display_id(value: int | None, kind: str) -> str:
     return str(value)
 
 
+def is_config_admin(interaction: discord.Interaction, guild_id: int) -> bool:
+    """Allow guild_id=0 for persistent views restored without a guild binding."""
+    guild = interaction.guild
+    return bool(
+        guild
+        and guild_id in (0, guild.id)
+        and interaction.user.guild_permissions.manage_guild
+    )
+
+
 class ConfigFieldButton(discord.ui.Button):
     def __init__(self, cog, guild_id: int, field: str):
         current = cog.get_config_value(guild_id, field)
@@ -65,7 +73,7 @@ class ConfigFieldButton(discord.ui.Button):
         self.cog, self.guild_id, self.field = cog, guild_id, field
 
     async def callback(self, interaction: discord.Interaction):
-        if not interaction.guild or interaction.guild.id != self.guild_id or not interaction.user.guild_permissions.manage_guild:
+        if not is_config_admin(interaction, self.guild_id):
             await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
             return
         await interaction.response.defer()
@@ -82,7 +90,12 @@ class ConfigBackButton(discord.ui.Button):
         self.cog, self.guild_id = cog, guild_id
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(view=YouTubeConfigPanel(self.cog, self.guild_id))
+        if not is_config_admin(interaction, self.guild_id):
+            await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            view=YouTubeConfigPanel(self.cog, interaction.guild.id)
+        )
 
 
 class ConfigCategorySelect(discord.ui.Select):
@@ -101,17 +114,17 @@ class ConfigCategorySelect(discord.ui.Select):
                          custom_id="yn:config:category")
 
     async def callback(self, interaction: discord.Interaction):
-        if not interaction.guild or interaction.guild.id != self.guild_id or not interaction.user.guild_permissions.manage_guild:
+        if not is_config_admin(interaction, self.guild_id):
             await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
             return
         await interaction.response.edit_message(
-            view=make_config_detail_view(self.cog, self.guild_id, self.values[0])
+            view=make_config_detail_view(self.cog, interaction.guild.id, self.values[0])
         )
 
 
 def make_config_detail_view(cog, guild_id: int, category: str):
     cfg = cog.db.fetchone(
-        """SELECT forum_id, mention_role_id, error_log_channel_id,
+        """SELECT forum_id, error_log_channel_id,
                   dm_notify_role_id, live_notify_role_id, video_notify_role_id,
                   all_notify_role_id, short_tag_id, horizontal_tag_id,
                   live_tag_id, premiere_tag_id, member_panel_channel_id,
@@ -148,7 +161,6 @@ def make_config_detail_view(cog, guild_id: int, category: str):
     elif category == "roles":
         card.add_item(discord.ui.TextDisplay("通知カテゴリーごとのロールを設定します。"))
         for field, label in [
-            ("mention_role_id", "メンション"),
             ("dm_notify_role_id", "DM"),
             ("live_notify_role_id", "LIVE・プレミア公開"),
             ("video_notify_role_id", "横動画・Shorts"),
@@ -219,22 +231,23 @@ class MemberPanelTargetSelect(discord.ui.ChannelSelect):
             )]
 
     async def callback(self, interaction: discord.Interaction):
-        if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
+        if not is_config_admin(interaction, self.guild_id):
             await interaction.response.send_message("サーバー管理権限が必要です。", ephemeral=True)
             return
         target = self.values[0]
-        if target.guild.id != self.guild_id or not isinstance(target, (discord.TextChannel, discord.NewsChannel)):
+        guild_id = interaction.guild.id
+        if target.guild.id != guild_id or not isinstance(target, (discord.TextChannel, discord.NewsChannel)):
             await interaction.response.send_message("テキストチャンネルまたはアナウンスチャンネルを選択してください。", ephemeral=True)
             return
-        self.cog._member_panel_targets[self.guild_id] = target.id
+        self.cog._member_panel_targets[guild_id] = target.id
         await interaction.response.edit_message(
-            view=make_config_detail_view(self.cog, self.guild_id, "memberpanel")
+            view=make_config_detail_view(self.cog, guild_id, "memberpanel")
         )
 
 
 class PublishMemberPanelButton(discord.ui.Button):
     def __init__(self, cog):
-        super().__init__(label="選択したチャンネルに送信・更新", style=discord.ButtonStyle.success,
+        super().__init__(label="通知設定パネルを送信・更新", style=discord.ButtonStyle.success,
                          custom_id="yn:config:memberpanel:publish")
         self.cog = cog
 
@@ -250,13 +263,17 @@ class PublishMemberPanelButton(discord.ui.Button):
                 target = await interaction.guild.fetch_channel(channel_id)
             except discord.HTTPException:
                 log.exception("Could not resolve selected member panel destination %s.", channel_id)
-        if not isinstance(target, (discord.TextChannel, discord.NewsChannel)):
+                await interaction.followup.send("送信先を取得できませんでした。もう一度チャンネルを選択してください。")
+                return
+        if channel_id and not isinstance(target, (discord.TextChannel, discord.NewsChannel)):
             await interaction.followup.send("送信先を取得できませんでした。もう一度チャンネルを選択してください。")
             return
         member_cog = self.cog.bot.get_cog("YouTubeMemberPreferences")
         if member_cog is None:
             await interaction.followup.send("メンバー通知機能が読み込まれていません。")
             return
+        # With no in-memory selection, publish_panel reuses the saved destination.
+        # This keeps the persistent config panel functional after a bot restart.
         ok, result = await member_cog.publish_panel(interaction.guild, target)
         if ok:
             await interaction.message.edit(
@@ -297,7 +314,7 @@ class YouTubeConfigPanel(discord.ui.LayoutView):
         super().__init__(timeout=None)
         self.cog, self.guild_id = cog, guild_id
         cfg = cog.db.fetchone(
-            """SELECT forum_id, mention_role_id FROM guild_config WHERE guild_id=?""",
+            """SELECT forum_id, all_notify_role_id FROM guild_config WHERE guild_id=?""",
             (guild_id,),
         )
         channels = cog.db.fetchone(
@@ -305,14 +322,14 @@ class YouTubeConfigPanel(discord.ui.LayoutView):
             (guild_id,),
         )
         forum_id = cfg["forum_id"] if cfg else None
-        mention_role_id = cfg["mention_role_id"] if cfg else None
+        all_notify_role_id = cfg["all_notify_role_id"] if cfg else None
         card = discord.ui.Container()
         card.add_item(discord.ui.TextDisplay("# YouTubeNotice | Config"))
         card.add_item(discord.ui.Separator())
         card.add_item(discord.ui.TextDisplay(
             "**通知先フォーラム：** " + (f"<#{forum_id}>" if forum_id else "未設定")
             + "\n**監視チャンネル：** " + str(channels["total"] if channels else 0) + "件"
-            + "\n**メンションロール：** " + (f"<@&{mention_role_id}>" if mention_role_id else "未設定")
+            + "\n**全通知ロール：** " + (f"<@&{all_notify_role_id}>" if all_notify_role_id else "未設定")
         ))
         card.add_item(discord.ui.TextDisplay(
             "ボタンから各種設定を変更できます。設定変更にはサーバー管理権限が必要です。"

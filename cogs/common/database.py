@@ -16,7 +16,6 @@ CREATE TABLE IF NOT EXISTS guild_config (
     horizontal_tag_id INTEGER,
     premiere_tag_id INTEGER,
     archive_tag_id INTEGER,
-    mention_role_id INTEGER,
     error_log_channel_id INTEGER,
     dm_notify_role_id INTEGER,
     live_notify_role_id INTEGER,
@@ -144,12 +143,26 @@ class Database:
         }
         for column in (
             "short_tag_id", "horizontal_tag_id", "premiere_tag_id", "archive_tag_id",
-            "mention_role_id", "error_log_channel_id", "dm_notify_role_id", "live_notify_role_id",
+            "error_log_channel_id", "dm_notify_role_id", "live_notify_role_id",
             "video_notify_role_id", "all_notify_role_id",
             "member_panel_channel_id", "member_panel_message_id",
         ):
             if column not in config_columns:
                 self.connection.execute(f"ALTER TABLE guild_config ADD COLUMN {column} INTEGER")
+        # Preserve the former common mention role as the all-notification role.
+        # Existing all-notification settings take precedence when already configured.
+        if "mention_role_id" in config_columns:
+            self.connection.execute(
+                """UPDATE guild_config
+                   SET all_notify_role_id=mention_role_id
+                   WHERE all_notify_role_id IS NULL AND mention_role_id IS NOT NULL"""
+            )
+            try:
+                self.connection.execute("ALTER TABLE guild_config DROP COLUMN mention_role_id")
+            except sqlite3.OperationalError:
+                # Older SQLite builds may not support DROP COLUMN. The legacy
+                # value has still been migrated and the application no longer reads it.
+                pass
         self.connection.commit()
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
